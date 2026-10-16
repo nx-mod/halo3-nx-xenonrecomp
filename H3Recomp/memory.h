@@ -62,6 +62,11 @@ namespace h3
     // Returns false if the host can't reserve it.
     bool InitGuestMemory();
 
+    // Backs guest memory before its first use. A host that commits pages
+    // lazily (the PC) has nothing to do; the Switch maps memory into the
+    // range (docs/SWITCH.md). The physical views are always backed.
+    void CommitGuestRange(uint32_t address, uint32_t size);
+
     template <typename T>
     T* GuestPtr(uint32_t address)
     {
@@ -82,7 +87,9 @@ namespace h3
     {
     public:
         // A heap over guest addresses [base, end) handing out pageSize pages.
-        GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize);
+        // commitOnAlloc backs every allocation at once (CommitGuestRange);
+        // otherwise the caller commits what it uses.
+        GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize, bool commitOnAlloc = false);
 
         // Returns the guest address, or 0 if the range is full or (for a
         // fixed address) already in use. Size is rounded up to whole pages.
@@ -108,6 +115,7 @@ namespace h3
         uint32_t m_base;
         uint32_t m_end;
         uint32_t m_pageSize;
+        bool m_commitOnAlloc;
         mutable std::mutex m_mutex;
         std::map<uint32_t, uint32_t> m_allocations;  // base -> size
     };

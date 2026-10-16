@@ -21,11 +21,14 @@
 #include <thread>
 #include <vector>
 
-#include <execinfo.h>
 #include <pthread.h>
+
+#ifndef __SWITCH__
+#include <execinfo.h>
 #include <signal.h>
 
 extern "C" char __executable_start;
+#endif
 
 namespace h3::kernel
 {
@@ -38,6 +41,7 @@ namespace h3::kernel
         std::mutex g_hostThreadMutex;
         std::map<uint32_t, pthread_t> g_hostThreads;
 
+#ifndef __SWITCH__
         // DumpHostBacktrace's hand-off: the target thread's SIGUSR2 handler
         // fills these.
         constexpr int kMaxBacktraceFrames = 48;
@@ -48,6 +52,7 @@ namespace h3::kernel
         {
             g_backtraceFrames.store(backtrace(g_backtrace, kMaxBacktraceFrames));
         }
+#endif
 
         std::mutex g_tlsMutex;
         std::vector<bool> g_tlsUsed;
@@ -130,6 +135,11 @@ namespace h3::kernel
 
     void DumpHostBacktrace(uint32_t kthread)
     {
+#ifdef __SWITCH__
+        // No signals on Horizon to interrupt another thread with; a hang's
+        // stacks come from Atmosphere's crash report instead.
+        fprintf(stderr, "[kernel]   thread %08X: no host backtrace on the Switch\n", kthread);
+#else
         pthread_t target;
         {
             std::lock_guard lock(g_hostThreadMutex);
@@ -161,6 +171,7 @@ namespace h3::kernel
         for (int i = 0; i < frames; i++)
             fprintf(stderr, " %lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(g_backtrace[i]) - executable));
         fprintf(stderr, "\n");
+#endif
     }
 
     GuestThread* CurrentThread()

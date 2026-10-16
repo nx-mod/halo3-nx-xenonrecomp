@@ -56,14 +56,30 @@ namespace h3::kernel
         // BSS); guest memory starts zeroed, so copying what's there is enough.
         void CopyImage(const Image& image)
         {
+            CommitGuestRange(uint32_t(image.base), image.size);
             memcpy(g_base + image.base, image.data.get(), std::min<size_t>(image.dataSize, image.size));
         }
 
         // Fills the recompiler's function lookup table (guest address -> host function)
         // from a module's mapping list, so indirect calls (function pointers, vtables)
         // find the recompiled code.
+        // The lookup table's slots for guest code addresses [low, high).
+        void CommitLookupSlots(uint64_t low, uint64_t high)
+        {
+            const uint64_t table = PPC_IMAGE_BASE + PPC_IMAGE_SIZE;
+            CommitGuestRange(uint32_t(table + (low - PPC_CODE_BASE) * 2), uint32_t((high - low) * 2 + 8));
+        }
+
         void RegisterFunctions(PPCFuncMapping* mappings)
         {
+            uint64_t low = UINT64_MAX, high = 0;
+            for (PPCFuncMapping* mapping = mappings; mapping->host != nullptr; mapping++)
+            {
+                low = std::min<uint64_t>(low, mapping->guest);
+                high = std::max<uint64_t>(high, mapping->guest + 4);
+            }
+            if (low < high)
+                CommitLookupSlots(low, high);
             for (PPCFuncMapping* mapping = mappings; mapping->host != nullptr; mapping++)
                 PPC_LOOKUP_FUNC(g_base, mapping->guest) = mapping->host;
         }
@@ -94,6 +110,7 @@ namespace h3::kernel
         // instead of crashing.
         void RegisterExecutableFunctions()
         {
+            CommitLookupSlots(PPC_CODE_BASE, PPC_CODE_BASE + PPC_CODE_SIZE);
             RegisterFunctions(PPCFuncMappings);
             PPC_LOOKUP_FUNC(g_base, kThunkAddress) = Thunk_822010D0;
             for (uint64_t address = PPC_CODE_BASE; address < PPC_CODE_BASE + PPC_CODE_SIZE; address += 4)

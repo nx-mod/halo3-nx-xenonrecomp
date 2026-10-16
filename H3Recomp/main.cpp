@@ -27,6 +27,16 @@
 
 #include <unistd.h>
 
+#ifdef __SWITCH__
+#include <switch.h>
+
+extern "C"
+{
+    extern u32 __nx_applet_exit_mode;
+    NX_NORETURN void __libnx_exit(int rc);
+}
+#endif
+
 // The recompiler's function lookup table lives right after the image and
 // must fit inside the 4 GiB guest range.
 static_assert(PPC_IMAGE_BASE + PPC_IMAGE_SIZE + PPC_CODE_SIZE * 2 <= h3::kGuestMemorySize);
@@ -47,7 +57,19 @@ namespace
 int main(int argc, char* argv[])
 {
     // Point this at default_patched.xex when recompiling with a title update.
+#ifdef __SWITCH__
+    // sdmc:/halo3-nx/ holds default.xex, game/ (the disc) and hdd/; the log
+    // goes there too, since there is no terminal.
+    const char* xexPath = "sdmc:/halo3-nx/default.xex";
+    freopen("sdmc:/halo3-nx/halo3.log", "w", stdout);
+    freopen("sdmc:/halo3-nx/halo3.log", "a", stderr);
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IOLBF, 0);
+    (void)argc;
+    (void)argv;
+#else
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
+#endif
 
     // game:\ is the disc contents: private/game/ next to the XEX (see
     // private/README.md), or the XEX's own directory if it's in there. The
@@ -132,5 +154,15 @@ int main(int argc, char* argv[])
     int exitCode = h3::video::RunEventLoop();
     fflush(stdout);
     fflush(stderr);
+#ifdef __SWITCH__
+    // The guest's threads still run and the loader can't take its memory
+    // back from under them, so the process ends instead of returning to it.
+    // An application asks the system for that: with exit mode 1, libnx
+    // closes its services and sends ISelfController::Exit (svcExitProcess
+    // is reported as "closed because an error occurred"). As nfsmw-nx does.
+    __nx_applet_exit_mode = 1;
+    __libnx_exit(exitCode);
+#else
     std::_Exit(exitCode);
+#endif
 }

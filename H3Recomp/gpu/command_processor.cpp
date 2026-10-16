@@ -867,7 +867,11 @@ namespace h3::gpu
             {
                 timespec wall, cpu;
                 clock_gettime(CLOCK_MONOTONIC, &wall);
+#ifdef __SWITCH__
+                cpu = wall;  // no per-thread CPU clock on Horizon (H3_LOG_FPS only)
+#else
                 clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
+#endif
                 return { wall.tv_sec + wall.tv_nsec * 1e-9, cpu.tv_sec + cpu.tv_nsec * 1e-9 };
             }
         };

@@ -9,6 +9,16 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__SWITCH__)
+#include <switch.h>
+#include <unistd.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+extern "C" char* fake_heap_end;  // newlib's heap limit (libnx sets it from the loader's heap)
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -32,7 +42,60 @@ namespace h3
         constexpr uint32_t kPhysicalViewE = 0xE0000000;
         constexpr uint32_t kViewEOffset = 0x1000;
 
-#ifndef _WIN32
+#ifdef __SWITCH__
+        // Proven on hardware by switch/probe (docs/SWITCH.md). Physical
+        // memory is shared memory, mapped at each view: its first page and
+        // the rest as two objects, because the 0xE0000000 view starts a page
+        // in and a view maps an object from its start. Shared memory needs
+        // memory the loader's heap has not taken, so the unused top of the
+        // heap is given back first. Everything else in the window is backed
+        // on first use, in 2 MiB chunks of heap aliased into it.
+        constexpr uint64_t kHeapGivenBack = kPhysicalMemorySize + (64ull << 20);
+        constexpr uint64_t kChunk = 0x200000;
+        constexpr uint32_t kChunkCount = kPhysicalMemoryBase / kChunk;  // below the physical views
+
+        Handle g_physicalFirstPage = 0;
+        Handle g_physicalRest = 0;
+        std::mutex g_commitMutex;
+        std::vector<uint8_t> g_committed;  // one flag per chunk
+        uint64_t g_committedBytes = 0;
+
+        bool MapSharedView(uint32_t guest, Handle handle, uint64_t size)
+        {
+            Result rc = svcMapSharedMemory(handle, g_base + guest, size, Perm_Rw);
+            if (R_FAILED(rc))
+                fprintf(stderr, "[memory] mapping physical memory at 0x%08X failed: 0x%x\n", guest, rc);
+            return R_SUCCEEDED(rc);
+        }
+
+        // One chunk of heap, zeroed, aliased at guest chunk `index`.
+        bool CommitChunk(uint32_t index)
+        {
+            void* heap = std::aligned_alloc(kChunk, kChunk);
+            if (heap == nullptr)
+            {
+                fprintf(stderr, "[memory] out of host memory committing 0x%08X (%llu MiB committed)\n",
+                    uint32_t(index * kChunk), (unsigned long long)(g_committedBytes >> 20));
+                return false;
+            }
+            std::memset(heap, 0, kChunk);
+            const Handle process = envGetOwnProcessHandle();
+            const u64 at = u64(uintptr_t(g_base + uint64_t(index) * kChunk));
+            Result rc = svcMapProcessCodeMemory(process, at, u64(uintptr_t(heap)), kChunk);
+            if (R_SUCCEEDED(rc))
+                rc = svcSetProcessMemoryPermission(process, at, kChunk, Perm_Rw);
+            if (R_FAILED(rc))
+            {
+                fprintf(stderr, "[memory] committing 0x%08X failed: 0x%x\n", uint32_t(index * kChunk), rc);
+                return false;
+            }
+            g_committed[index] = 1;
+            g_committedBytes += kChunk;
+            return true;
+        }
+#endif
+
+#if !defined(_WIN32) && !defined(__SWITCH__)
         int g_physicalFd = -1;
 
         // Maps `size` bytes of the physical memory file, from `offset`, at guest
@@ -63,6 +126,52 @@ namespace h3
         // TODO: the physical views aren't aliased on Windows yet (needs a
         // section mapped with MapViewOfFile3 into placeholders).
         void* memory = VirtualAlloc(nullptr, kGuestMemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#elif defined(__SWITCH__)
+        if (!envHasHeapOverride() || envGetOwnProcessHandle() == 0)
+        {
+            fprintf(stderr, "[memory] needs the homebrew loader's heap and process handle\n");
+            return false;
+        }
+        u64 heapRegion = 0;
+        svcGetInfo(&heapRegion, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0);
+        uint8_t* const heapEnd = static_cast<uint8_t*>(envGetHeapOverrideAddr()) + envGetHeapOverrideSize();
+        const u64 heapSize = u64(uintptr_t(heapEnd)) - heapRegion;
+        void* at = nullptr;
+        if (static_cast<uint8_t*>(sbrk(0)) >= heapEnd - kHeapGivenBack ||
+            R_FAILED(svcSetHeapSize(&at, heapSize - kHeapGivenBack)))
+        {
+            fprintf(stderr, "[memory] can't give the heap's top back for physical memory\n");
+            return false;
+        }
+        fake_heap_end = reinterpret_cast<char*>(heapEnd - kHeapGivenBack);
+
+        virtmemLock();
+        void* memory = virtmemFindAslr(kGuestMemorySize, 0x10000000);
+        if (memory && !virtmemAddReservation(memory, kGuestMemorySize))
+            memory = nullptr;
+        virtmemUnlock();
+        if (memory == nullptr)
+            return false;
+        g_base = static_cast<uint8_t*>(memory);
+
+        if (R_FAILED(svcCreateSharedMemory(&g_physicalFirstPage, kPageSize4K, Perm_Rw, Perm_Rw)) ||
+            R_FAILED(svcCreateSharedMemory(&g_physicalRest, kPhysicalMemorySize - kPageSize4K, Perm_Rw, Perm_Rw)))
+        {
+            fprintf(stderr, "[memory] can't create physical memory\n");
+            return false;
+        }
+        const uint64_t rest = kPhysicalMemorySize - kPageSize4K;
+        if (!MapSharedView(kPhysicalMemoryBase, g_physicalFirstPage, kPageSize4K) ||
+            !MapSharedView(kPhysicalMemoryBase + kPageSize4K, g_physicalRest, rest) ||
+            !MapSharedView(kPhysicalViewC, g_physicalFirstPage, kPageSize4K) ||
+            !MapSharedView(kPhysicalViewC + kPageSize4K, g_physicalRest, rest) ||
+            !MapSharedView(kPhysicalViewE, g_physicalRest, rest))
+            return false;
+
+        g_committed.assign(kChunkCount, 0);
+        // The hardware register blocks the runtime emulates as memory.
+        CommitGuestRange(kGpuRegisterBase, 0x20000);
+        CommitGuestRange(0x7FEA0000, 0x10000);  // XMA (apu/xma_decoder.cpp)
 #else
         void* memory = mmap(nullptr, kGuestMemorySize, PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -83,11 +192,42 @@ namespace h3
         return g_base != nullptr;
     }
 
+    void CommitGuestRange(uint32_t address, uint32_t size)
+    {
+#ifdef __SWITCH__
+        if (size == 0 || address >= kPhysicalMemoryBase)
+            return;
+        const uint64_t end = std::min<uint64_t>(uint64_t(address) + size, kPhysicalMemoryBase);
+        std::lock_guard lock(g_commitMutex);
+        for (uint64_t index = address / kChunk; index * kChunk < end; index++)
+            if (!g_committed[index] && !CommitChunk(uint32_t(index)))
+                return;
+#else
+        (void)address;
+        (void)size;
+#endif
+    }
+
     // Releases the host pages behind a range so they read back as zero (and
     // stop using host memory).
     static void ZeroPages(uint32_t address, uint32_t size)
     {
-#ifdef _WIN32
+#ifdef __SWITCH__
+        // Memory stays committed; only its contents go.
+        if (address >= kPhysicalMemoryBase)
+        {
+            std::memset(g_base + address, 0, size);
+            return;
+        }
+        std::lock_guard lock(g_commitMutex);
+        for (uint64_t at = address; at < uint64_t(address) + size;)
+        {
+            const uint64_t end = std::min<uint64_t>((at / kChunk + 1) * kChunk, uint64_t(address) + size);
+            if (g_committed[at / kChunk])
+                std::memset(g_base + at, 0, end - at);
+            at = end;
+        }
+#elif defined(_WIN32)
         // Guest pages are at least 4 KiB, so this lines up with host pages.
         VirtualFree(g_base + address, size, MEM_DECOMMIT);
         VirtualAlloc(g_base + address, size, MEM_COMMIT, PAGE_READWRITE);
@@ -103,8 +243,8 @@ namespace h3
     }
 
 
-    GuestHeap::GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize)
-        : m_base(base), m_end(end), m_pageSize(pageSize)
+    GuestHeap::GuestHeap(uint32_t base, uint32_t end, uint32_t pageSize, bool commitOnAlloc)
+        : m_base(base), m_end(end), m_pageSize(pageSize), m_commitOnAlloc(commitOnAlloc)
     {
     }
 
@@ -131,6 +271,8 @@ namespace h3
         }
 
         m_allocations.emplace(uint32_t(start), uint32_t(end - start));
+        if (m_commitOnAlloc)
+            CommitGuestRange(uint32_t(start), uint32_t(end - start));
         return uint32_t(start);
     }
 
@@ -162,6 +304,8 @@ namespace h3
             if (candidate < low)
                 return 0;
             m_allocations.emplace(uint32_t(candidate), uint32_t(bytes));
+            if (m_commitOnAlloc)
+                CommitGuestRange(uint32_t(candidate), uint32_t(bytes));
             return uint32_t(candidate);
         }
 
@@ -180,6 +324,8 @@ namespace h3
             return 0;
 
         m_allocations.emplace(uint32_t(candidate), uint32_t(bytes));
+        if (m_commitOnAlloc)
+            CommitGuestRange(uint32_t(candidate), uint32_t(bytes));
         return uint32_t(candidate);
     }
 
@@ -256,7 +402,7 @@ namespace h3
     // KTHREAD, TLS, kernel object stand-ins the game can see).
     GuestHeap& SystemHeap()
     {
-        static GuestHeap heap(kSystemBase, kGpuRegisterBase, kPageSize4K);
+        static GuestHeap heap(kSystemBase, kGpuRegisterBase, kPageSize4K, true);
         return heap;
     }
 

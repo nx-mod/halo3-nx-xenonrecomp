@@ -23,6 +23,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__SWITCH__)
+// switch/platform/co_switch.S: saves the callee-saved registers on the
+// current stack, stores its pointer in *source and resumes *target.
+extern "C" void h3_co_switch(void** target, void** source);
+extern "C" void* h3_co_init(void* stackTop, void (*entry)(void*), void* argument);
 #else
 #include <ucontext.h>
 #endif
@@ -49,7 +54,12 @@ namespace
 
     // Host stack for each new fiber. Recompiled frames are larger than the
     // guest's, so this is generous; untouched pages cost nothing.
+#ifdef __SWITCH__
+    // The Switch commits what it allocates, so less than the PC's.
+    constexpr size_t kHostStackSize = 4 * 1024 * 1024;
+#else
     constexpr size_t kHostStackSize = 8 * 1024 * 1024;
+#endif
 
     struct HostFiber
     {
@@ -58,6 +68,9 @@ namespace
         PPCContext startContext{};  // template for a fiber's first run
 #ifdef _WIN32
         void* handle = nullptr;
+#elif defined(__SWITCH__)
+        void* stackPointer = nullptr;  // saved by h3_co_switch
+        std::unique_ptr<uint8_t[]> stack;
 #else
         ucontext_t context{};
         std::unique_ptr<uint8_t[]> stack;
@@ -92,6 +105,11 @@ namespace
     // Where a new fiber's host stack starts: runs the guest fiber routine.
 #ifdef _WIN32
     void WINAPI FiberEntry(void* parameter)
+    {
+        RunFiber(*static_cast<HostFiber*>(parameter));
+    }
+#elif defined(__SWITCH__)
+    void FiberEntry(void* parameter)
     {
         RunFiber(*static_cast<HostFiber*>(parameter));
     }
@@ -132,6 +150,12 @@ namespace
         else
         {
             slot->handle = CreateFiber(kHostStackSize, FiberEntry, slot.get());
+        }
+#elif defined(__SWITCH__)
+        if (!current)
+        {
+            slot->stack = std::make_unique_for_overwrite<uint8_t[]>(kHostStackSize);
+            slot->stackPointer = h3_co_init(slot->stack.get() + kHostStackSize, FiberEntry, slot.get());
         }
 #else
         if (!current)
@@ -176,6 +200,8 @@ PPC_FUNC(sub_8259FE40)
 
 #ifdef _WIN32
     SwitchToFiber(to.handle);
+#elif defined(__SWITCH__)
+    h3_co_switch(&to.stackPointer, &from.stackPointer);
 #else
     t_startingFiber = &to;
     swapcontext(&from.context, &to.context);

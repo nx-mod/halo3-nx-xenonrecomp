@@ -15,6 +15,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# The Nintendo Switch build (devkitPro's toolchain file): the recompiled game
+# and the runtime as an NRO; the host tools are built by a host configure.
+if (NINTENDO_SWITCH)
+    add_subdirectory(switch)
+    return()
+endif()
+
 if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(WARNING "XenonRecomp output is only tested with Clang 18+. Use the CMake presets.")
 endif()

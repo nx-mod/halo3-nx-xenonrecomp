@@ -89,6 +89,8 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
         return;
     }
 
+    if (type & kMemCommit)
+        CommitGuestRange(address, size);
     baseRef = address;
     sizeRef = size;
     ctx.r3.u64 = kStatusSuccess;
