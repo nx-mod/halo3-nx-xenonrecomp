@@ -10,7 +10,7 @@
 
 namespace
 {
-    __attribute__((constructor(101))) void LoadEnvFile()
+    __attribute__((constructor(102))) void LoadEnvFile()
     {
         FILE* file = fopen("sdmc:/halo3-nx/env.txt", "r");
         if (!file)

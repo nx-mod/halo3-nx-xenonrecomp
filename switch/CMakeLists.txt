@@ -101,6 +101,7 @@ add_executable(halo3-nx
     platform/threads_switch.cpp
     platform/debug_null.cpp
     platform/env_switch.cpp
+    platform/sd_lock_switch.cpp
     platform/co_switch.S
 )
 
