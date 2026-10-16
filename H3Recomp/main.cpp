@@ -106,10 +106,11 @@ int main(int argc, char* argv[])
     }
 
     // On the console Halo 3 reads its cache header from the raw partition,
-    // mounts its own cache file system and links cache0:/cache1: to it. The
-    // caches are host folders instead, linked up front; the raw partitions
-    // open as null devices (xboxkrnl_io.cpp), so the game's own mount can
-    // still run, and the device it links to is the same folder.
+    // mounts its own cache file system and links cache0:/cache1: to it. We
+    // don't emulate the raw partition (opening it fails, so the game skips
+    // its own mount), and back the caches with host folders linked up
+    // front. Should it link to its devices anyway, they are the same
+    // folders.
     for (int i = 0; i < kCachePartitionCount; i++)
     {
         std::string cache = "Cache" + std::to_string(i);
