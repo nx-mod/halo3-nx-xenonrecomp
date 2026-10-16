@@ -177,7 +177,10 @@ namespace h3::kernel
             }
             result.path = std::move(match);
         }
-        result.exists = std::filesystem::exists(result.path, error);
+        // Every component was found in its directory's listing, so it exists.
+        // (Asking the host again is not the same: on the Switch a file open
+        // for writing can't be stat'ed, and it would read as missing.)
+        result.exists = !components.empty() || std::filesystem::exists(result.path, error);
         return result;
     }
 

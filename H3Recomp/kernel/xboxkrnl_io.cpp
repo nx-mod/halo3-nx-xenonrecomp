@@ -17,10 +17,18 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace h3;
 using namespace h3::kernel;
@@ -165,6 +173,89 @@ namespace
         return path.lexically_normal().string();
     }
 
+    // One host stream per host file, shared by every guest handle open on it
+    // (each keeps its own position; reads and writes seek first). The game
+    // opens a file it is writing a second time to read it, and on the Switch
+    // a file open for writing can't be opened again, or stat'ed, until it is
+    // closed. Sharing the stream also keeps both handles' views the same.
+    struct HostStream
+    {
+        std::FILE* stream = nullptr;
+        bool writable = false;
+        std::mutex mutex;  // one seek and transfer at a time
+    };
+
+    // Sets an open file's length.
+    bool TruncateStream(std::FILE* stream, uint64_t length)
+    {
+#ifdef _WIN32
+        return _chsize_s(_fileno(stream), int64_t(length)) == 0;
+#else
+        return ftruncate(fileno(stream), off_t(length)) == 0;
+#endif
+    }
+
+    std::recursive_mutex g_hostStreamMutex;
+    std::unordered_map<std::string, std::weak_ptr<HostStream>> g_hostStreams;  // by ShareKey
+
+    std::shared_ptr<HostStream> FindHostStream(const std::filesystem::path& path)
+    {
+        std::lock_guard lock(g_hostStreamMutex);
+        auto it = g_hostStreams.find(ShareKey(path));
+        return it != g_hostStreams.end() ? it->second.lock() : nullptr;
+    }
+
+    // Opens the host file for a guest handle, or joins the stream already
+    // open on it (reopened for writing if this handle writes and it didn't).
+    // truncate empties the file. Null if the host refuses.
+    std::shared_ptr<HostStream> OpenHostStream(const std::filesystem::path& path, bool write, bool create,
+        bool truncate)
+    {
+        std::lock_guard lock(g_hostStreamMutex);
+        std::string key = ShareKey(path);
+        std::string name = path.string();
+        if (auto host = g_hostStreams[key].lock())
+        {
+            std::lock_guard streamLock(host->mutex);
+            if (write && !host->writable)
+            {
+                fclose(host->stream);
+                host->stream = fopen(name.c_str(), "r+b");
+                host->writable = host->stream != nullptr;
+                if (!host->stream)
+                    host->stream = fopen(name.c_str(), "rb");
+                if (!host->writable)
+                    return nullptr;
+            }
+            if (truncate)
+            {
+                fflush(host->stream);
+                if (!TruncateStream(host->stream, 0))
+                    return nullptr;
+            }
+            return host;
+        }
+
+        std::FILE* stream = fopen(name.c_str(), (create || truncate) ? "w+b" : write ? "r+b" : "rb");
+        if (!stream)
+            return nullptr;
+        // The last handle's close closes the stream and forgets it.
+        std::shared_ptr<HostStream> host(new HostStream, [key](HostStream* closing)
+        {
+            std::lock_guard lock(g_hostStreamMutex);
+            if (closing->stream)
+                fclose(closing->stream);
+            auto it = g_hostStreams.find(key);
+            if (it != g_hostStreams.end() && it->second.expired())
+                g_hostStreams.erase(it);
+            delete closing;
+        });
+        host->stream = stream;
+        host->writable = create || truncate || write;
+        g_hostStreams[key] = host;
+        return host;
+    }
+
     // Opens a handle against the file's share access, or returns the NT
     // status the open fails with.
     uint32_t AcquireShareAccess(File* file, const std::filesystem::path& path, uint32_t access, uint32_t share,
@@ -231,8 +322,7 @@ namespace
         File() : KernelObject(ObjectType::File) {}
         ~File() override
         {
-            if (stream != nullptr)
-                fclose(stream);
+            host.reset();  // closes the stream if this was its last handle
             bool remove = shared ? ReleaseShareAccess(this, hostPath, grant, deleteOnClose) : deleteOnClose;
             if (remove)
             {
@@ -260,7 +350,7 @@ namespace
         uint32_t completionKey = 0;
 
         std::mutex mutex;
-        std::FILE* stream = nullptr;
+        std::shared_ptr<HostStream> host;  // files only
         uint64_t position = 0;
 
         // NtQueryDirectoryFile state.
@@ -384,10 +474,29 @@ namespace
         info.directory = std::filesystem::is_directory(path, error);
         info.time = ToFileTime(std::filesystem::last_write_time(path, error));
         if (!info.directory)
+        {
             info.size = std::filesystem::file_size(path, error);
+            if (error)
+                info.size = 0;
+        }
         info.attributes = info.directory ? kAttributeDirectory : kAttributeNormal;
         if (!writable)
             info.attributes |= kAttributeReadOnly;
+
+        // A file open here is asked through its stream: on the Switch one
+        // open for writing can't be stat'ed by path.
+        if (auto host = info.directory ? nullptr : FindHostStream(path))
+        {
+            std::lock_guard lock(host->mutex);
+            fflush(host->stream);
+            struct stat status;
+            if (fstat(fileno(host->stream), &status) == 0)
+            {
+                info.size = uint64_t(status.st_size);
+                if (error)
+                    info.time = ToFileTime(std::filesystem::file_time_type::clock::now());
+            }
+        }
         return info;
     }
 
@@ -541,9 +650,8 @@ namespace
         }
         else if (!file->directory)
         {
-            const char* mode = (create || truncate) ? "w+b" : (mapped->writable && wantsWrite ? "r+b" : "rb");
-            file->stream = fopen(file->hostPath.string().c_str(), mode);
-            if (file->stream == nullptr)
+            file->host = OpenHostStream(file->hostPath, mapped->writable && wantsWrite, create, truncate);
+            if (!file->host)
                 return finish(kStatusAccessDenied, 0);
         }
 
@@ -616,7 +724,7 @@ PPC_FUNC(__imp__NtReadFile)
         ctx.r3.u64 = kStatusSuccess;
         return;
     }
-    if (!file || file->stream == nullptr)
+    if (!file || !file->host)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
         return;
@@ -628,11 +736,13 @@ PPC_FUNC(__imp__NtReadFile)
     size_t read;
     {
         std::lock_guard lock(file->mutex);
+        std::lock_guard streamLock(file->host->mutex);
+        std::FILE* stream = file->host->stream;
         uint64_t offset = offsetPtr != 0 ? GuestRef<uint64_t>(offsetPtr).get() : kUseFilePointer;
         if (offset == kUseFilePointer)
             offset = file->position;
-        Seek(file->stream, offset);
-        read = ReadToGuest(file->stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
+        Seek(stream, offset);
+        read = ReadToGuest(stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + read;
     }
 
@@ -664,7 +774,7 @@ PPC_FUNC(__imp__NtReadFileScatter)
         ctx.r3.u64 = kStatusSuccess;
         return;
     }
-    if (!file || file->stream == nullptr)
+    if (!file || !file->host)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
         return;
@@ -677,15 +787,17 @@ PPC_FUNC(__imp__NtReadFileScatter)
     size_t total = 0;
     {
         std::lock_guard lock(file->mutex);
+        std::lock_guard streamLock(file->host->mutex);
+        std::FILE* stream = file->host->stream;
         uint64_t offset = offsetPtr != 0 ? GuestRef<uint64_t>(offsetPtr).get() : kUseFilePointer;
         if (offset == kUseFilePointer)
             offset = file->position;
-        Seek(file->stream, offset);
+        Seek(stream, offset);
         for (uint32_t i = 0; total < length; i++)
         {
             uint32_t page = GuestRef<uint32_t>(segments + i * 4);
             size_t chunk = std::min<size_t>(kPageSize4K, length - total);
-            size_t read = ReadToGuest(file->stream, GuestPtr<uint8_t>(page), chunk);
+            size_t read = ReadToGuest(stream, GuestPtr<uint8_t>(page), chunk);
             total += read;
             if (read < chunk)
                 break;
@@ -717,7 +829,7 @@ PPC_FUNC(__imp__NtWriteFile)
         ctx.r3.u64 = kStatusSuccess;
         return;
     }
-    if (!file || file->stream == nullptr)
+    if (!file || !file->host)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
         return;
@@ -734,16 +846,18 @@ PPC_FUNC(__imp__NtWriteFile)
     size_t written;
     {
         std::lock_guard lock(file->mutex);
+        std::lock_guard streamLock(file->host->mutex);
+        std::FILE* stream = file->host->stream;
         uint64_t offset = offsetPtr != 0 ? GuestRef<uint64_t>(offsetPtr).get() : kUseFilePointer;
         if (offset == kUseFilePointer)
             offset = file->position;
         if (offset == kWriteToEnd)
         {
-            fseek(file->stream, 0, SEEK_END);
-            offset = uint64_t(ftell(file->stream));
+            fseek(stream, 0, SEEK_END);
+            offset = uint64_t(ftell(stream));
         }
-        Seek(file->stream, offset);
-        written = WriteFromGuest(file->stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
+        Seek(stream, offset);
+        written = WriteFromGuest(stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + written;
     }
     if (g_logFiles)
@@ -767,8 +881,11 @@ PPC_FUNC(__imp__NtFlushBuffersFile)
     }
     {
         std::lock_guard lock(file->mutex);
-        if (file->stream != nullptr)
-            fflush(file->stream);
+        if (file->host)
+        {
+            std::lock_guard streamLock(file->host->mutex);
+            fflush(file->host->stream);
+        }
     }
     CompleteIo(ctx.r4.u32, kStatusSuccess, 0, 0);
     ctx.r3.u64 = kStatusSuccess;
@@ -834,8 +951,11 @@ PPC_FUNC(__imp__NtQueryInformationFile)
 
     {
         std::lock_guard lock(file->mutex);
-        if (file->stream != nullptr)
-            fflush(file->stream);
+        if (file->host)
+        {
+            std::lock_guard streamLock(file->host->mutex);
+            fflush(file->host->stream);
+        }
     }
     FileInfo info = QueryFileInfo(file->hostPath, file->writable);
 
@@ -986,14 +1106,16 @@ PPC_FUNC(__imp__NtSetInformationFile)
     case 19:  // FileAllocationInformation
     case 20:  // FileEndOfFileInformation
     {
-        if (!file->writable || file->stream == nullptr)
+        if (!file->writable || !file->host)
         {
             ctx.r3.u64 = kStatusAccessDenied;
             return;
         }
-        fflush(file->stream);
-        std::error_code error;
-        std::filesystem::resize_file(file->hostPath, GuestRef<uint64_t>(in), error);
+        // Through the open stream, not the path: on the Switch a file open
+        // for writing can't be opened again to resize it.
+        std::lock_guard streamLock(file->host->mutex);
+        fflush(file->host->stream);
+        TruncateStream(file->host->stream, GuestRef<uint64_t>(in));
         break;
     }
     default:
