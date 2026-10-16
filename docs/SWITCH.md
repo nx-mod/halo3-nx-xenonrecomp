@@ -39,8 +39,15 @@ The addresses fit one executable: retail `default.xex` 0.0.0.42 (disc, no
 title update), SHA-1 `927a8c49062a55179d84116e33f8a5a0b3db13c1`
 (docs/DUMPING.md).
 
-## Known gaps
+## XenonRecomp
 
-- Upstream added 12 PowerPC instructions to XenonRecomp locally and has not
-  published them (docs/ROADMAP.md, phase 1); the submodule is stock. They
-  have to be added again before the retail executable recompiles.
+The submodule is [nx-mod/XenonRecomp](https://github.com/nx-mod/XenonRecomp),
+branch `halo3-nx`: upstream's 12 unpublished instructions done again (lvxl128,
+stvlxl128, vandc, vsel128, vctuxs, vpkuwus, vpkswss, lhbrx, frsqrte, eqv,
+mulhdu, dcbst), blrl, the vupkd3d128/vpkd3d128 formats from the ReXGlue SDK,
+and `Image::dataSize`. The retail executable recompiles with no unrecognized
+instruction and no trap left in the output.
+
+`H3_TOOLS_ONLY=ON` (`cmake --preset release -DH3_TOOLS_ONLY=ON` once) builds
+the recompiler and tools without the PC runtime, for a host that only
+recompiles.

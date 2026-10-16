@@ -1,3 +1,4 @@
 [submodule "thirdparty/XenonRecomp"]
 	path = thirdparty/XenonRecomp
-	url = https://github.com/hedge-dev/XenonRecomp.git
+	url = https://github.com/nx-mod/XenonRecomp.git
+	branch = halo3-nx

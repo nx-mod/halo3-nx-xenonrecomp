@@ -52,7 +52,13 @@ endif()
 # code from the user's own XEX (see tools/recompile.sh).
 set(H3_PPC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/H3RecompLib/ppc)
 
-if (EXISTS ${H3_PPC_DIR}/ppc_config.h)
+# H3_TOOLS_ONLY: a host that only recompiles for another target (the Switch
+# port, docs/SWITCH.md) builds the tools and never the PC runtime.
+option(H3_TOOLS_ONLY "Build the recompiler and tools only" OFF)
+
+if (H3_TOOLS_ONLY)
+    message(STATUS "H3_TOOLS_ONLY: building tools only")
+elseif (EXISTS ${H3_PPC_DIR}/ppc_config.h)
     add_subdirectory(H3RecompLib)
     add_subdirectory(H3Recomp)
 else()
