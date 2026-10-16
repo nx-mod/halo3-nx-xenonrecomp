@@ -774,6 +774,49 @@ PPC_FUNC(__imp__NtFlushBuffersFile)
     ctx.r3.u64 = kStatusSuccess;
 }
 
+// NTSTATUS NtDeviceIoControlFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE
+//     apcRoutine, PVOID apcContext, PIO_STATUS_BLOCK iosb, ULONG code,
+//     PVOID input, ULONG inputLength, PVOID output, ULONG outputLength)
+//
+// XMountUtilityDrive's cache mount asks the raw cache partition for its
+// geometry and size. The answers are Xenia's (nfsmw-nx xboxkrnl_io.cpp),
+// which pass the mount's checks.
+PPC_FUNC(__imp__NtDeviceIoControlFile)
+{
+    constexpr uint32_t kCacheSize = 0xFF000;
+    constexpr uint32_t kGetDriveGeometry = 0x70000;
+    constexpr uint32_t kGetPartitionInfo = 0x74004;
+
+    uint32_t iosb = ctx.r7.u32;
+    uint32_t code = ctx.r8.u32;
+    uint32_t output = StackArgument(ctx, 8);
+    uint32_t outputLength = StackArgument(ctx, 9);
+    if (g_logFiles)
+        fprintf(stderr, "[io] NtDeviceIoControlFile 0x%X (output 0x%X bytes)\n", code, outputLength);
+
+    uint32_t status = kStatusSuccess;
+    uint32_t written = 0;
+    if (code == kGetDriveGeometry && outputLength >= 8)
+    {
+        GuestRef<uint32_t>(output) = kCacheSize / 512;
+        GuestRef<uint32_t>(output + 4) = 512;
+        written = 8;
+    }
+    else if (code == kGetPartitionInfo && outputLength >= 16)
+    {
+        GuestRef<uint64_t>(output) = 0;
+        GuestRef<uint64_t>(output + 8) = kCacheSize;
+        written = 16;
+    }
+    else
+    {
+        fprintf(stderr, "[io] NtDeviceIoControlFile: unhandled code 0x%X\n", code);
+        status = 0xC000000D;  // STATUS_INVALID_PARAMETER
+    }
+    CompleteIo(iosb, status, written, ctx.r4.u32);
+    ctx.r3.u64 = status;
+}
+
 // NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID info,
 //     ULONG length, FILE_INFORMATION_CLASS infoClass)
 PPC_FUNC(__imp__NtQueryInformationFile)
@@ -803,6 +846,9 @@ PPC_FUNC(__imp__NtQueryInformationFile)
     case 5: size = 0x18; break;   // FileStandardInformation
     case 6: size = 0x08; break;   // FileInternalInformation
     case 14: size = 0x08; break;  // FilePositionInformation
+    case 16: size = 0x04; break;  // FileModeInformation
+    case 17: size = 0x04; break;  // FileAlignmentInformation (XMountUtilityDrive asks the raw Cache0)
+    case 26: size = 0x04; break;  // FileSectorInformation
     case 34: size = 0x38; break;  // FileNetworkOpenInformation
     default:
         fprintf(stderr, "[io] NtQueryInformationFile: unsupported class %u for %s\n", infoClass, file->guestPath.c_str());
@@ -835,6 +881,15 @@ PPC_FUNC(__imp__NtQueryInformationFile)
         break;
     case 14:
         GuestRef<uint64_t>(out) = file->position;
+        break;
+    case 16:
+    case 17:
+        // As Xenia: no mode flags, byte alignment.
+        GuestRef<uint32_t>(out) = 0;
+        break;
+    case 26:
+        // The file's first sector; Xenia makes one up from the path.
+        GuestRef<uint32_t>(out) = uint32_t(std::hash<std::string>{}(file->guestPath));
         break;
     case 34:
         WriteNetworkOpenInfo(out, info);
