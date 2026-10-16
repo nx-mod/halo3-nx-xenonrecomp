@@ -37,6 +37,7 @@ namespace h3::kernel
     void DumpWaitTotals();
     uint64_t FileBytesRead();     // kernel/xboxkrnl_io.cpp
     uint64_t FileBytesWritten();
+    void DumpThreadWaits();       // kernel/objects.cpp
 }
 
 namespace h3::native::tags
@@ -110,6 +111,7 @@ namespace h3::video
 
         uint32_t lastFrame = 0;
         auto lastStatus = Clock::now();
+        auto lastWaitDump = Clock::now();
         while (appletMainLoop())
         {
             if (int code = g_quitCode.load(); code >= 0)
@@ -151,6 +153,16 @@ namespace h3::video
             }
 
             auto now = Clock::now();
+
+            // Until the first frame, what each game thread is blocked on,
+            // every 10 seconds: a boot that stops shows where it stopped.
+            if (g_framesPresented.load() == 0 && now - lastWaitDump >= std::chrono::seconds(10))
+            {
+                fprintf(stderr, "[video] no frame yet; game threads blocked:\n");
+                kernel::DumpThreadWaits();
+                lastWaitDump = now;
+            }
+
             double elapsed = std::chrono::duration<double>(now - lastStatus).count();
             if (elapsed >= 0.5)
             {
