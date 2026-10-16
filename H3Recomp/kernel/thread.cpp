@@ -40,6 +40,9 @@ namespace h3::kernel
         // DumpHostBacktrace.
         std::mutex g_hostThreadMutex;
         std::map<uint32_t, pthread_t> g_hostThreads;
+        // Each guest thread's register context, for DumpThreads: where a
+        // thread that isn't waiting is running (read without stopping it).
+        std::map<uint32_t, PPCContext*> g_contexts;  // by KTHREAD
 
 #ifndef __SWITCH__
         // DumpHostBacktrace's hand-off: the target thread's SIGUSR2 handler
@@ -131,6 +134,7 @@ namespace h3::kernel
         t_currentThread = thread;
         std::lock_guard lock(g_hostThreadMutex);
         g_hostThreads[thread->kthread] = pthread_self();
+        g_contexts[thread->kthread] = &ctx;
     }
 
     void DumpHostBacktrace(uint32_t kthread)
@@ -203,9 +207,32 @@ namespace h3::kernel
                 continue;
             uint32_t kthread = thread->guest ? thread->guest->kthread : 0;
             std::string name = ThreadName(kthread);
-            fprintf(stderr, "[kernel]   thread object %08X kthread %08X%s%s%s: %s, suspend count %u\n", thread->guestHeader,
+            fprintf(stderr, "[kernel]   thread object %08X kthread %08X%s%s%s: %s, suspend count %u", thread->guestHeader,
                 kthread, name.empty() ? "" : " (", name.c_str(), name.empty() ? "" : ")",
                 thread->exited ? "exited" : "live", thread->suspendCount);
+            PPCContext* ctx = nullptr;
+            {
+                std::lock_guard hostLock(g_hostThreadMutex);
+                auto it = g_contexts.find(kthread);
+                if (it != g_contexts.end())
+                    ctx = it->second;
+            }
+            if (ctx && !thread->exited)
+            {
+                // The last call's return address, then the callers from the
+                // stack's back chain (racy: the thread keeps running).
+                fprintf(stderr, ", lr=0x%08X", uint32_t(ctx->lr));
+                uint32_t frame = ctx->r1.u32;
+                for (int depth = 0; depth < 12 && frame >= 0x10000 && frame < 0xF0000000; depth++)
+                {
+                    uint32_t up = GuestRef<uint32_t>(frame);
+                    if (up <= frame || up - frame > 0x100000)
+                        break;
+                    fprintf(stderr, " <- 0x%08X", uint32_t(GuestRef<uint32_t>(up - 8)));
+                    frame = up;
+                }
+            }
+            fprintf(stderr, "\n");
         }
     }
 
