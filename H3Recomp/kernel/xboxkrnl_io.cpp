@@ -301,6 +301,62 @@ namespace
 #endif
     }
 
+    // Reads into and writes from guest memory. On the Switch guest memory is
+    // shared memory, which Horizon does not accept as an IPC buffer, and file
+    // access is IPC to the fs service: a large fread hands its buffer straight
+    // to fs and fails (small ones go through stdio's own buffer, which is why
+    // the game got as far as it did). There the data goes through a host
+    // buffer.
+#ifdef __SWITCH__
+    constexpr size_t kBounceSize = 1024 * 1024;
+
+    uint8_t* BounceBuffer()
+    {
+        thread_local std::vector<uint8_t> buffer(kBounceSize);
+        return buffer.data();
+    }
+#endif
+
+    size_t ReadToGuest(std::FILE* stream, uint8_t* destination, size_t length)
+    {
+#ifdef __SWITCH__
+        uint8_t* bounce = BounceBuffer();
+        size_t total = 0;
+        while (total < length)
+        {
+            size_t chunk = std::min(kBounceSize, length - total);
+            size_t read = fread(bounce, 1, chunk, stream);
+            std::memcpy(destination + total, bounce, read);
+            total += read;
+            if (read < chunk)
+                break;
+        }
+        return total;
+#else
+        return fread(destination, 1, length, stream);
+#endif
+    }
+
+    size_t WriteFromGuest(std::FILE* stream, const uint8_t* source, size_t length)
+    {
+#ifdef __SWITCH__
+        uint8_t* bounce = BounceBuffer();
+        size_t total = 0;
+        while (total < length)
+        {
+            size_t chunk = std::min(kBounceSize, length - total);
+            std::memcpy(bounce, source + total, chunk);
+            size_t written = fwrite(bounce, 1, chunk, stream);
+            total += written;
+            if (written < chunk)
+                break;
+        }
+        return total;
+#else
+        return fwrite(source, 1, length, stream);
+#endif
+    }
+
     // FILETIME: 100 ns intervals since 1601-01-01.
     uint64_t ToFileTime(std::filesystem::file_time_type time)
     {
@@ -540,7 +596,7 @@ PPC_FUNC(__imp__NtReadFile)
         if (offset == kUseFilePointer)
             offset = file->position;
         Seek(file->stream, offset);
-        read = fread(GuestPtr<uint8_t>(ctx.r8.u32), 1, length, file->stream);
+        read = ReadToGuest(file->stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + read;
     }
 
@@ -585,7 +641,7 @@ PPC_FUNC(__imp__NtReadFileScatter)
         {
             uint32_t page = GuestRef<uint32_t>(segments + i * 4);
             size_t chunk = std::min<size_t>(kPageSize4K, length - total);
-            size_t read = fread(GuestPtr<uint8_t>(page), 1, chunk, file->stream);
+            size_t read = ReadToGuest(file->stream, GuestPtr<uint8_t>(page), chunk);
             total += read;
             if (read < chunk)
                 break;
@@ -635,7 +691,7 @@ PPC_FUNC(__imp__NtWriteFile)
             offset = uint64_t(ftell(file->stream));
         }
         Seek(file->stream, offset);
-        written = fwrite(GuestPtr<uint8_t>(ctx.r8.u32), 1, length, file->stream);
+        written = WriteFromGuest(file->stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + written;
     }
 
