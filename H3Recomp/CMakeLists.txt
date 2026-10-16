@@ -33,6 +33,7 @@ add_executable(H3Recomp
     debug/write_watch.cpp
     hooks/block_copy.cpp
     hooks/campaign.cpp
+    hooks/create_file.cpp
     hooks/fibers.cpp
     hooks/random_seed.cpp
     hooks/tick_rate.cpp

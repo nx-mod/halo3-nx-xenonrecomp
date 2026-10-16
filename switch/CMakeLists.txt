@@ -59,6 +59,7 @@ add_executable(halo3-nx
     ${R}/debug/state_hash.cpp
     ${R}/hooks/block_copy.cpp
     ${R}/hooks/campaign.cpp
+    ${R}/hooks/create_file.cpp
     ${R}/hooks/fibers.cpp
     ${R}/hooks/random_seed.cpp
     ${R}/hooks/tick_rate.cpp

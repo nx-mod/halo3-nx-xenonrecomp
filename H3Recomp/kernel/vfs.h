@@ -31,6 +31,10 @@ namespace h3::kernel
 
     // ObCreateSymbolicLink / ObDeleteSymbolicLink. Link names are like "d:".
     void AddSymbolicLink(std::string_view link, std::string_view target);
+
+    // Backs \Device\cache<index>, the device the game's own cache mount
+    // links cache0:/cache1: to, with a host folder.
+    void SetCacheRoot(int index, std::filesystem::path root);
     bool RemoveSymbolicLink(std::string_view link);
 
     struct HostPath

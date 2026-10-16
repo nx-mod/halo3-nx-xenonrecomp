@@ -93,6 +93,11 @@ namespace h3::kernel
         SetMount("\\Device\\Harddisk0", std::move(root), true);
     }
 
+    void SetCacheRoot(int index, std::filesystem::path root)
+    {
+        SetMount("\\Device\\cache" + std::to_string(index), std::move(root), true);
+    }
+
     std::filesystem::path UserDataRoot()
     {
         std::lock_guard lock(g_mutex);
