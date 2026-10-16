@@ -35,6 +35,8 @@ namespace h3::hooks
 namespace h3::kernel
 {
     void DumpWaitTotals();
+    uint64_t FileBytesRead();     // kernel/xboxkrnl_io.cpp
+    uint64_t FileBytesWritten();
 }
 
 namespace h3::native::tags
@@ -153,7 +155,9 @@ namespace h3::video
             if (elapsed >= 0.5)
             {
                 uint32_t frame = g_framesPresented.load();
-                printf("\rframe %u (%.0f fps)      ", frame, (frame - lastFrame) / elapsed);
+                printf("\rframe %u (%.0f fps)  read %llu MB  wrote %llu MB      ", frame, (frame - lastFrame) / elapsed,
+                    (unsigned long long)(kernel::FileBytesRead() >> 20),
+                    (unsigned long long)(kernel::FileBytesWritten() >> 20));
                 consoleUpdate(nullptr);
                 lastFrame = frame;
                 lastStatus = now;

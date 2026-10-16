@@ -10,6 +10,7 @@
 #include "../memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -119,6 +120,10 @@ namespace
     constexpr uint64_t kWriteToEnd = 0xFFFFFFFFFFFFFFFFull;
 
     const bool g_logFiles = EnvFlag("H3_LOG_FILES");
+
+    // Bytes the guest has read and written, for the Switch status line.
+    std::atomic<uint64_t> g_bytesRead{ 0 };
+    std::atomic<uint64_t> g_bytesWritten{ 0 };
     const bool g_logReads = EnvFlag("H3_LOG_READS");
 
     // Access mask bits, grouped the way NT's share access check sees them.
@@ -744,6 +749,7 @@ PPC_FUNC(__imp__NtReadFile)
         Seek(stream, offset);
         read = ReadToGuest(stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + read;
+        g_bytesRead += read;
     }
 
     uint32_t status = (read == 0 && length != 0) ? kStatusEndOfFile : kStatusSuccess;
@@ -803,6 +809,7 @@ PPC_FUNC(__imp__NtReadFileScatter)
                 break;
         }
         file->position = offset + total;
+        g_bytesRead += total;
     }
     if (g_logReads)
         fprintf(stderr, "[io] scatter read %s @0x%llX len 0x%X (%zu bytes)\n", file->guestPath.c_str(),
@@ -859,6 +866,7 @@ PPC_FUNC(__imp__NtWriteFile)
         Seek(stream, offset);
         written = WriteFromGuest(stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + written;
+        g_bytesWritten += written;
     }
     if (g_logFiles)
         fprintf(stderr, "[io] write %s @0x%llX len 0x%X (%zu bytes)\n", file->guestPath.c_str(),
@@ -1337,4 +1345,10 @@ PPC_FUNC(__imp__ObDeleteSymbolicLink)
 PPC_FUNC(__imp__IoDismountVolume)
 {
     ctx.r3.u64 = kStatusSuccess;
+}
+
+namespace h3::kernel
+{
+    uint64_t FileBytesRead() { return g_bytesRead.load(); }
+    uint64_t FileBytesWritten() { return g_bytesWritten.load(); }
 }
