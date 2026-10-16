@@ -38,6 +38,7 @@ namespace h3::kernel
     uint64_t FileBytesRead();     // kernel/xboxkrnl_io.cpp
     uint64_t FileBytesWritten();
     void DumpThreadWaits();       // kernel/objects.cpp
+    void DumpThreads();           // kernel/thread.cpp
 }
 
 namespace h3::native::tags
@@ -160,6 +161,7 @@ namespace h3::video
             {
                 fprintf(stderr, "[video] no frame yet; game threads blocked:\n");
                 kernel::DumpThreadWaits();
+                kernel::DumpThreads();
                 lastWaitDump = now;
             }
 

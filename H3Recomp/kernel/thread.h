@@ -49,6 +49,9 @@ namespace h3::kernel
     // KTHREAD (interrupts it with SIGUSR2), as offsets into the executable.
     void DumpHostBacktrace(uint32_t kthread);
 
+    // Debugging: every guest thread, live or exited, with its suspend count.
+    void DumpThreads();
+
     // Sets up the calling host thread as a guest thread with its own Thread
     // object: the process's main thread, or runtime threads that call guest
     // code (GPU interrupts).

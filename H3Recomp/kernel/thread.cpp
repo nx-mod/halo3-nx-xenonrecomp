@@ -179,12 +179,43 @@ namespace h3::kernel
         return t_currentThread;
     }
 
+    namespace
+    {
+        // Every guest thread made, for DumpThreads.
+        std::mutex g_allThreadsMutex;
+        std::vector<std::weak_ptr<Thread>> g_allThreads;
+
+        void Remember(const std::shared_ptr<Thread>& thread)
+        {
+            std::lock_guard lock(g_allThreadsMutex);
+            g_allThreads.push_back(thread);
+        }
+    }
+
+    void DumpThreads()
+    {
+        std::lock_guard lock(g_allThreadsMutex);
+        auto dispatcher = DispatcherLock();
+        for (const auto& weak : g_allThreads)
+        {
+            auto thread = weak.lock();
+            if (!thread)
+                continue;
+            uint32_t kthread = thread->guest ? thread->guest->kthread : 0;
+            std::string name = ThreadName(kthread);
+            fprintf(stderr, "[kernel]   thread object %08X kthread %08X%s%s%s: %s, suspend count %u\n", thread->guestHeader,
+                kthread, name.empty() ? "" : " (", name.c_str(), name.empty() ? "" : ")",
+                thread->exited ? "exited" : "live", thread->suspendCount);
+        }
+    }
+
     std::shared_ptr<Thread> AdoptHostThread(PPCContext& ctx, uint32_t stackSize)
     {
         GuestThread* guest = AllocateGuestThread(stackSize);
         BindGuestThread(guest, ctx);
         auto thread = MakeThreadObject(guest);
         RegisterThreadObject(thread);
+        Remember(thread);
         return thread;
     }
 
@@ -193,6 +224,7 @@ namespace h3::kernel
     {
         auto thread = MakeThreadObject(AllocateGuestThread(stackSize));
         thread->suspendCount = suspended ? 1 : 0;
+        Remember(thread);
 
         std::thread([thread, xapiStartup, start, context]
         {

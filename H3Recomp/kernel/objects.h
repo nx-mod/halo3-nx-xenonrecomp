@@ -173,7 +173,8 @@ namespace h3::kernel
 
     // What each guest thread is blocked on, for diagnosing hangs: set before
     // a blocking wait, cleared after; DumpThreadWaits prints them all.
-    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller = 0);
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller = 0,
+        uint32_t stack = 0);
     void ClearThreadWait(uint32_t thread);
     void DumpThreadWaits();
     // Guest thread names, as the game sets them (RtlRaiseException with

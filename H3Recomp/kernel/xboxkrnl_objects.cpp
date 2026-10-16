@@ -76,7 +76,7 @@ namespace
         uint32_t backChain = GuestRef<uint32_t>(ctx.r1.u32);
         uint32_t caller = backChain ? uint32_t(GuestRef<uint32_t>(backChain - 8)) : 0;
         SetThreadWait(kthread, objects.size() > 1 ? (waitAll ? "all of" : "any of") : "object", objects[0]->guestHeader,
-            uint32_t(objects[0]->type) | uint32_t(objects.size()) << 8, uint32_t(ctx.lr), caller);
+            uint32_t(objects[0]->type) | uint32_t(objects.size()) << 8, uint32_t(ctx.lr), caller, ctx.r1.u32);
         uint32_t status = WaitForObjects(objects, waitAll, DeadlineFromGuest(timeoutPtr), kthread, thread.get());
         ClearThreadWait(kthread);
         if (status == kStatusUserApc)
@@ -498,7 +498,7 @@ PPC_FUNC(__imp__KeDelayExecutionThread)
     }
     else if (deadline)
     {
-        SetThreadWait(CurrentKThread(), "delay", 0, 0, uint32_t(ctx.lr));
+        SetThreadWait(CurrentKThread(), "delay", 0, 0, uint32_t(ctx.lr), 0, ctx.r1.u32);
         std::this_thread::sleep_until(*deadline);
         ClearThreadWait(CurrentKThread());
     }

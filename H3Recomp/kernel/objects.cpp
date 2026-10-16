@@ -121,6 +121,7 @@ namespace h3::kernel
             const char* what;
             uint32_t object, detail, lr, caller;
             std::chrono::steady_clock::time_point start;
+            uint32_t stack = 0;  // the guest r1 at the wait, for DumpThreadWaits' call chain
         };
         std::mutex g_threadWaitMutex;
         std::map<uint32_t, ThreadWait> g_threadWaits;
@@ -136,10 +137,12 @@ namespace h3::kernel
         std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, WaitTotal> g_waitTotals;  // (thread, lr, caller, object)
     }
 
-    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller)
+    void SetThreadWait(uint32_t thread, const char* what, uint32_t object, uint32_t detail, uint32_t lr, uint32_t caller,
+        uint32_t stack)
     {
         std::lock_guard lock(g_threadWaitMutex);
-        g_threadWaits[thread] = { what, object, detail, lr, caller, g_logWaits ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point() };
+        g_threadWaits[thread] = { what, object, detail, lr, caller,
+            g_logWaits ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point(), stack };
     }
 
     void ClearThreadWait(uint32_t thread)
@@ -201,8 +204,21 @@ namespace h3::kernel
         for (const auto& [thread, wait] : g_threadWaits)
         {
             std::string name = ThreadName(thread);
-            fprintf(stderr, "[kernel]   thread %08X%s%s%s waits on %s %08X (%08X) lr=0x%08X\n", thread, name.empty() ? "" : " (",
+            fprintf(stderr, "[kernel]   thread %08X%s%s%s waits on %s %08X (%08X) lr=0x%08X", thread, name.empty() ? "" : " (",
                 name.c_str(), name.empty() ? "" : ")", wait.what, wait.object, wait.detail, wait.lr);
+            // Its callers: each frame's first word links to the caller's
+            // frame, and a function saves its return address 8 bytes below
+            // the caller's frame. The stack holds still while it waits.
+            uint32_t frame = wait.stack;
+            for (int depth = 0; depth < 12 && frame >= 0x10000 && frame < 0xF0000000; depth++)
+            {
+                uint32_t up = GuestRef<uint32_t>(frame);
+                if (up <= frame || up - frame > 0x100000)
+                    break;
+                fprintf(stderr, " <- 0x%08X", uint32_t(GuestRef<uint32_t>(up - 8)));
+                frame = up;
+            }
+            fprintf(stderr, "\n");
         }
     }
 
