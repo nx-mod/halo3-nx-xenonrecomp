@@ -9,6 +9,10 @@
 // - virtual memory as heap aliased into the window with
 //   svcMapProcessCodeMemory and made read-write (haloce-nx's way).
 //
+// hbloader hands its program nearly all memory as heap, which leaves none for
+// shared memory (svcCreateSharedMemory: 0x10801, limit reached), so step 0
+// gives the unused top of the heap back first and the end restores it.
+//
 // Everything is unmapped again before it exits. Results go to the screen and
 // to sdmc:/halo3-nx/probe.txt.
 
@@ -20,12 +24,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define GUEST_SIZE 0x100000000ull
 #define PHYS_SIZE 0x20000000ull
 #define PAGE 0x1000ull
 #define VIRT_TEST_SIZE (64ull << 20)
 #define VIRT_TEST_GUEST 0x40000000u
+#define HEAP_GIVEN_BACK (576ull << 20)  // physical memory and some to spare
+
+extern char* fake_heap_end;  // newlib's heap limit (libnx sets it from the loader)
 
 static FILE* g_log;
 
@@ -90,6 +98,7 @@ int main(void) {
 
     plog("h3probe: Halo 3 guest memory on this console\n\n");
     memory_use("start");
+    Result rc = 0;
     const Handle process = envGetOwnProcessHandle();
     plog("own process handle: %s\n", process ? "yes" : "no (svcMapProcessCodeMemory unavailable)");
     plog("address space:\n");
@@ -97,6 +106,25 @@ int main(void) {
     region("alias", InfoType_AliasRegionAddress, InfoType_AliasRegionSize);
     region("stack", InfoType_StackRegionAddress, InfoType_StackRegionSize);
     region("aslr", InfoType_AslrRegionAddress, InfoType_AslrRegionSize);
+
+    // 0. Room for shared memory: the top of the heap, unused this early.
+    u64 heap_region = 0;
+    svcGetInfo(&heap_region, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0);
+    u8* const heap_end = (u8*)envGetHeapOverrideAddr() + envGetHeapOverrideSize();
+    const u64 heap_size = (u64)(uintptr_t)heap_end - heap_region;
+    char* const old_heap_limit = fake_heap_end;
+    bool heap_shrunk = false;
+    if (envHasHeapOverride() && (u8*)sbrk(0) < heap_end - HEAP_GIVEN_BACK) {
+        void* at = NULL;
+        rc = svcSetHeapSize(&at, heap_size - HEAP_GIVEN_BACK);
+        heap_shrunk = R_SUCCEEDED(rc);
+        if (heap_shrunk) fake_heap_end = (char*)(heap_end - HEAP_GIVEN_BACK);
+        plog("\n0. heap %llu MiB -> %llu MiB: 0x%x\n", (unsigned long long)(heap_size >> 20),
+             (unsigned long long)((heap_size - HEAP_GIVEN_BACK) >> 20), rc);
+        memory_use("heap shrunk");
+    } else {
+        plog("\n0. heap not shrunk (%s)\n", envHasHeapOverride() ? "top in use" : "no loader heap");
+    }
 
     // 1. The window.
     virtmemLock();
@@ -108,7 +136,7 @@ int main(void) {
 
     // 2. Physical memory: its first page and the rest, each shared memory.
     Handle page0 = 0, rest = 0;
-    Result rc = svcCreateSharedMemory(&page0, PAGE, Perm_Rw, Perm_Rw);
+    rc = svcCreateSharedMemory(&page0, PAGE, Perm_Rw, Perm_Rw);
     plog("\n2. svcCreateSharedMemory(4 KiB): 0x%x\n", rc);
     rc = svcCreateSharedMemory(&rest, PHYS_SIZE - PAGE, Perm_Rw, Perm_Rw);
     plog("   svcCreateSharedMemory(512 MiB - 4 KiB): 0x%x\n", rc);
@@ -198,6 +226,12 @@ int main(void) {
         virtmemLock();
         virtmemRemoveReservation(reservation);
         virtmemUnlock();
+    }
+    if (heap_shrunk) {
+        void* at = NULL;
+        rc = svcSetHeapSize(&at, heap_size);
+        if (R_SUCCEEDED(rc)) fake_heap_end = old_heap_limit;
+        plog("   heap back to %llu MiB: 0x%x\n", (unsigned long long)(heap_size >> 20), rc);
     }
     memory_use("end");
     plog("\ndone. Press + to exit.\n");

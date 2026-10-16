@@ -20,6 +20,22 @@ is the runtime around it.
    allocates, and alias the physical pages into the three windows with
    `svcMapMemory` from heap memory (the technique haloce-nx uses). Guest
    accesses stay `base + address`, unchecked. Real RAM: ~0.5-1 GiB.
+   Proven on hardware by `switch/probe` (h3probe, 2026-10-16):
+   - the 4 GiB window: `virtmemFindAslr` + `virtmemAddReservation` in the
+     ASLR region (64 GiB); `svcMapMemory` only maps into the stack region
+     (under 2 GiB), so it is not used;
+   - physical memory: shared memory (`svcCreateSharedMemory`) may be mapped
+     more than once, and one object mapped at 0xA0000000, 0xC0000000 and
+     0xE0000000 is one memory. It is two objects, the first page and the
+     rest, because the 0xE0000000 view starts 4 KiB in and a view maps an
+     object from its start. hbloader gives a program nearly all memory as
+     heap, so shared memory fails (0x10801, limit reached) until the unused
+     top of the heap is given back (`svcSetHeapSize`, newlib's
+     `fake_heap_end` lowered to match); the heap is grown back before exit;
+   - virtual memory: heap aliased into the window with
+     `svcMapProcessCodeMemory` and made read-write with
+     `svcSetProcessMemoryPermission` (one alias per heap page; a second is
+     refused, 0xd401).
 3. **Kernel.** Threads onto libnx threads: the game's six hardware threads on
    the three application cores. Waits, events and timers on libnx's
    primitives; file I/O from `sdmc:/halo3-nx/` (disc read-only, `hdd/`
