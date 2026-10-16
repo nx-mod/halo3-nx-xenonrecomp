@@ -58,13 +58,15 @@ int main(int argc, char* argv[])
 {
     // Point this at default_patched.xex when recompiling with a title update.
 #ifdef __SWITCH__
-    // sdmc:/halo3-nx/ holds default.xex, game/ (the disc) and hdd/; the log
-    // goes there too, since there is no terminal.
+    // sdmc:/halo3-nx/ holds default.xex, game/ (the disc) and hdd/; the logs
+    // go there too, since there is no terminal. stderr gets a file of its
+    // own: two handles on one file overwrite each other on the SD card, which
+    // lost the error that ended a run.
     const char* xexPath = "sdmc:/halo3-nx/default.xex";
     freopen("sdmc:/halo3-nx/halo3.log", "w", stdout);
-    freopen("sdmc:/halo3-nx/halo3.log", "a", stderr);
+    freopen("sdmc:/halo3-nx/halo3-err.log", "w", stderr);
     setvbuf(stdout, nullptr, _IOLBF, 0);
-    setvbuf(stderr, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
     (void)argc;
     (void)argv;
 #else

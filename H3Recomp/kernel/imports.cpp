@@ -15,6 +15,14 @@
 #include <string_view>
 #include <unordered_set>
 
+#ifdef __SWITCH__
+namespace h3::video
+{
+    // switch/platform/window_switch.cpp
+    [[noreturn]] void HaltOnFatal(const char* what);
+}
+#endif
+
 namespace h3::kernel
 {
     void UnimplementedImport(const char* name, PPCContext& ctx)
@@ -31,7 +39,12 @@ namespace h3::kernel
         }
 
         if (strict)
+        {
+#ifdef __SWITCH__
+            h3::video::HaltOnFatal(name);
+#endif
             abort();
+        }
 
         // Nt*/Io* return an NTSTATUS. Reporting success for a call that did
         // nothing sends the game down paths that read output it never got
@@ -60,6 +73,9 @@ namespace h3::kernel
         fprintf(stderr, "[kernel] %s (r3=0x%08X r4=0x%08X lr=0x%08llX), exiting\n", what,
             ctx.r3.u32, ctx.r4.u32, static_cast<unsigned long long>(ctx.lr));
         fflush(stdout);
+#ifdef __SWITCH__
+        h3::video::HaltOnFatal(what);
+#endif
         _Exit(1);
     }
 }
@@ -69,6 +85,9 @@ void H3SwitchUnreachable(uint32_t address, uint32_t value)
 {
     fprintf(stderr, "[recomp] jump table at 0x%08X indexed out of range (%u)\n", address, value);
     fflush(stderr);
+#ifdef __SWITCH__
+    h3::video::HaltOnFatal("jump table indexed out of range");
+#endif
     abort();
 }
 
@@ -87,5 +106,8 @@ void H3IndirectCallToNull(uint32_t target)
         "(the table, at guest 0x%08llX-, was overwritten)\n", target, (unsigned long long)low, (unsigned long long)high,
         (unsigned long long)(PPC_IMAGE_BASE + PPC_IMAGE_SIZE));
     fflush(stderr);
+#ifdef __SWITCH__
+    h3::video::HaltOnFatal("indirect call to a null lookup entry");
+#endif
     abort();
 }

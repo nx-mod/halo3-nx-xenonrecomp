@@ -105,7 +105,7 @@ add_executable(halo3-nx
 
 target_include_directories(halo3-nx PRIVATE ${R} ${THIRDPARTY_ROOT}/xxHash)
 # Host threads: stack, priority, cores and a detach that cannot throw (threads_switch.cpp).
-target_link_options(halo3-nx PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_detach)
+target_link_options(halo3-nx PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_detach -Wl,--wrap=abort)
 # The DLLs each recompile their own copy of the save/restore helpers
 # (__savegprlr_14...), identical code under the same names; any one will do.
 # UnleashedRecomp-NX's Switch toolchain links this way too.

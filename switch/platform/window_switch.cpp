@@ -49,7 +49,42 @@ namespace h3::video
     {
         std::atomic<uint32_t> g_framesPresented{ 0 };
         std::atomic<int> g_quitCode{ -1 };
+        std::atomic<const char*> g_fatal{ nullptr };
     }
+
+    // A guest thread that hits a fatal error stops here instead of exiting:
+    // exiting from it closes libnx's services (hid among them) under the
+    // main thread, which then aborts in its next pad poll and hides the
+    // real error. The message goes on screen and the thread sleeps; + and -
+    // still leave.
+    void HaltOnFatal(const char* what)
+    {
+        const char* expected = nullptr;
+        g_fatal.compare_exchange_strong(expected, what);
+        fflush(stdout);
+        fflush(stderr);
+        for (;;)
+            svcSleepThread(INT64_MAX);
+    }
+}
+
+// abort() from anywhere else (std::terminate, an assert) on a guest thread
+// gets the same treatment, through -Wl,--wrap=abort. On the main thread it
+// aborts as usual: nothing is left to show the message.
+extern "C"
+{
+    [[noreturn]] void __real_abort(void);
+
+    [[noreturn]] void __wrap_abort(void)
+    {
+        if (threadGetCurHandle() != envGetMainThreadHandle())
+            h3::video::HaltOnFatal("abort()");
+        __real_abort();
+    }
+}
+
+namespace h3::video
+{
 
     bool CreateMainWindow()
     {
@@ -70,9 +105,6 @@ namespace h3::video
     int RunEventLoop()
     {
         using Clock = std::chrono::steady_clock;
-        PadState pad;
-        padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-        padInitializeDefault(&pad);
 
         uint32_t lastFrame = 0;
         auto lastStatus = Clock::now();
@@ -90,10 +122,31 @@ namespace h3::video
             }
             input::Update(g_framesPresented.load());
 
-            padUpdate(&pad);
-            const u64 held = padGetButtons(&pad);
-            if ((held & HidNpadButton_Plus) && (held & HidNpadButton_Minus))
-                return 0;
+            // + and - together: through SDL, which owns the pads (a second
+            // libnx pad reader configured for one player made SDL's polling
+            // of the others abort in hid).
+            int count = 0;
+            if (SDL_JoystickID* pads = SDL_GetGamepads(&count))
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    SDL_Gamepad* gamepad = SDL_GetGamepadFromID(pads[i]);
+                    if (gamepad && SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START) &&
+                        SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK))
+                    {
+                        SDL_free(pads);
+                        return 0;
+                    }
+                }
+                SDL_free(pads);
+            }
+
+            if (const char* fatal = g_fatal.exchange(nullptr))
+            {
+                printf("\n\nStopped: %s\nsdmc:/halo3-nx/halo3-err.log has the details.\n"
+                    "Hold + and - to quit.\n", fatal);
+                consoleUpdate(nullptr);
+            }
 
             auto now = Clock::now();
             double elapsed = std::chrono::duration<double>(now - lastStatus).count();
