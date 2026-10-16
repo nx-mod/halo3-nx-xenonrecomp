@@ -249,6 +249,7 @@ namespace
         bool directory = false;
         bool writable = false;
         bool deleteOnClose = false;
+        bool nullDevice = false;  // a raw partition (see IsRawPartition)
 
         // Counted in g_shareAccess (writable files only; see OpenFile).
         bool shared = false;
@@ -451,6 +452,23 @@ namespace
     }
 
     // NtCreateFile and NtOpenFile.
+    // The hard drive's raw partitions themselves (not files on them): games'
+    // cache code opens \Device\Harddisk0\Partition0 directly. As Xenia does
+    // (nfsmw-nx's NullDevice for Partition0, Cache0 and Cache1), they open,
+    // and reads and writes succeed and move nothing.
+    bool IsRawPartition(std::string_view path)
+    {
+        for (std::string_view device : { "\\Device\\Harddisk0\\Partition0", "\\Device\\Harddisk0\\Cache0",
+                 "\\Device\\Harddisk0\\Cache1" })
+        {
+            if (path.size() == device.size() &&
+                std::equal(path.begin(), path.end(), device.begin(),
+                    [](char a, char b) { return std::tolower(uint8_t(a)) == std::tolower(uint8_t(b)); }))
+                return true;
+        }
+        return false;
+    }
+
     uint32_t OpenFile(uint32_t handlePtr, uint32_t access, uint32_t attributes, uint32_t iosb,
         uint32_t share, uint32_t disposition, uint32_t options)
     {
@@ -465,6 +483,16 @@ namespace
             CompleteIo(iosb, status, information, 0);
             return status;
         };
+
+        if (IsRawPartition(guestPath))
+        {
+            auto file = std::make_shared<File>();
+            file->guestPath = guestPath;
+            file->writable = true;
+            file->nullDevice = true;
+            GuestRef<uint32_t>(handlePtr) = CreateHandle(file);
+            return finish(kStatusSuccess, kOpened);
+        }
 
         if (!mapped)
             return finish(kStatusObjectPathNotFound, 0);
@@ -580,6 +608,14 @@ PPC_FUNC(__imp__NtOpenFile)
 PPC_FUNC(__imp__NtReadFile)
 {
     auto file = LookupHandleAs<File>(ctx.r3.u32);
+    if (file && file->nullDevice)
+    {
+        CompleteIo(ctx.r7.u32, kStatusSuccess, 0, ctx.r4.u32);
+        PostFileCompletion(*file, ctx.r6.u32, kStatusSuccess, 0);
+        QueueIoApc(ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+        ctx.r3.u64 = kStatusSuccess;
+        return;
+    }
     if (!file || file->stream == nullptr)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
@@ -620,6 +656,14 @@ PPC_FUNC(__imp__NtReadFile)
 PPC_FUNC(__imp__NtReadFileScatter)
 {
     auto file = LookupHandleAs<File>(ctx.r3.u32);
+    if (file && file->nullDevice)
+    {
+        CompleteIo(ctx.r7.u32, kStatusSuccess, 0, ctx.r4.u32);
+        PostFileCompletion(*file, ctx.r6.u32, kStatusSuccess, 0);
+        QueueIoApc(ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+        ctx.r3.u64 = kStatusSuccess;
+        return;
+    }
     if (!file || file->stream == nullptr)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
@@ -665,6 +709,14 @@ PPC_FUNC(__imp__NtReadFileScatter)
 PPC_FUNC(__imp__NtWriteFile)
 {
     auto file = LookupHandleAs<File>(ctx.r3.u32);
+    if (file && file->nullDevice)
+    {
+        CompleteIo(ctx.r7.u32, kStatusSuccess, 0, ctx.r4.u32);
+        PostFileCompletion(*file, ctx.r6.u32, kStatusSuccess, 0);
+        QueueIoApc(ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
+        ctx.r3.u64 = kStatusSuccess;
+        return;
+    }
     if (!file || file->stream == nullptr)
     {
         ctx.r3.u64 = kStatusInvalidHandle;
@@ -694,6 +746,9 @@ PPC_FUNC(__imp__NtWriteFile)
         written = WriteFromGuest(file->stream, GuestPtr<uint8_t>(ctx.r8.u32), length);
         file->position = offset + written;
     }
+    if (g_logFiles)
+        fprintf(stderr, "[io] write %s @0x%llX len 0x%X (%zu bytes)\n", file->guestPath.c_str(),
+            (unsigned long long)(file->position - written), length, written);
 
     CompleteIo(ctx.r7.u32, kStatusSuccess, uint32_t(written), ctx.r4.u32);
     PostFileCompletion(*file, ctx.r6.u32, kStatusSuccess, uint32_t(written));

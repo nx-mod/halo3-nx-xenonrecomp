@@ -72,6 +72,21 @@ namespace h3::kernel
     {
         fprintf(stderr, "[kernel] %s (r3=0x%08X r4=0x%08X lr=0x%08llX), exiting\n", what,
             ctx.r3.u32, ctx.r4.u32, static_cast<unsigned long long>(ctx.lr));
+
+        // The guest's callers, from its stack: each frame's first word links
+        // to the caller's frame, and a function saves its return address 8
+        // bytes below the caller's frame (stw r12,-8(r1) before stwu).
+        fprintf(stderr, "[kernel] guest callers:");
+        uint32_t frame = ctx.r1.u32;
+        for (int depth = 0; depth < 16 && frame >= 0x10000 && frame < 0xF0000000; depth++)
+        {
+            uint32_t caller = GuestRef<uint32_t>(frame);
+            if (caller <= frame || caller - frame > 0x100000)
+                break;
+            fprintf(stderr, " 0x%08X", uint32_t(GuestRef<uint32_t>(caller - 8)));
+            frame = caller;
+        }
+        fprintf(stderr, "\n");
         fflush(stdout);
 #ifdef __SWITCH__
         h3::video::HaltOnFatal(what);
