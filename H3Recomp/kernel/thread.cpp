@@ -231,6 +231,11 @@ namespace h3::kernel
                     fprintf(stderr, " <- 0x%08X", uint32_t(GuestRef<uint32_t>(up - 8)));
                     frame = up;
                 }
+                // Registers as last stored to the context: stale for values
+                // the compiled code keeps in host registers between calls.
+                fprintf(stderr, "\n[kernel]     ctr=%08X r3=%08X r4=%08X r5=%08X r24-r31=%08X %08X %08X %08X %08X %08X %08X %08X",
+                    ctx->ctr.u32, ctx->r3.u32, ctx->r4.u32, ctx->r5.u32, ctx->r24.u32, ctx->r25.u32, ctx->r26.u32,
+                    ctx->r27.u32, ctx->r28.u32, ctx->r29.u32, ctx->r30.u32, ctx->r31.u32);
             }
             fprintf(stderr, "\n");
         }

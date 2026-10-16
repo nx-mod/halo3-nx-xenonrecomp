@@ -9,6 +9,7 @@
 #include "video/window.h"
 #include "config/env.h"
 #include "input/input.h"
+#include "memory.h"
 
 #include <SDL3/SDL.h>
 #include <switch.h>
@@ -89,6 +90,33 @@ extern "C"
 
 namespace h3::video
 {
+    namespace
+    {
+        // H3_PEEK=ADDRESS:LENGTH[,...] (hex address, decimal length): guest
+        // memory printed with the thread dumps, as big-endian words.
+        void PeekGuestMemory()
+        {
+            const char* spec = EnvString("H3_PEEK");
+            if (spec == nullptr)
+                return;
+            for (const char* at = spec; *at;)
+            {
+                char* end = nullptr;
+                uint32_t address = uint32_t(strtoul(at, &end, 16));
+                if (end == at)
+                    break;
+                uint32_t length = (*end == ':') ? uint32_t(strtoul(end + 1, &end, 10)) : 16;
+                for (uint32_t offset = 0; offset < length; offset += 16)
+                {
+                    fprintf(stderr, "[peek] %08X:", address + offset);
+                    for (uint32_t word = 0; word < 16 && offset + word < length; word += 4)
+                        fprintf(stderr, " %08X", uint32_t(GuestRef<uint32_t>(address + offset + word)));
+                    fprintf(stderr, "\n");
+                }
+                at = (*end == ',') ? end + 1 : end;
+            }
+        }
+    }
 
     bool CreateMainWindow()
     {
@@ -162,6 +190,7 @@ namespace h3::video
                 fprintf(stderr, "[video] no frame yet; game threads blocked:\n");
                 kernel::DumpThreadWaits();
                 kernel::DumpThreads();
+                PeekGuestMemory();
                 lastWaitDump = now;
             }
 
