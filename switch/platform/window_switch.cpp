@@ -270,6 +270,9 @@ namespace h3::video
 
     bool CreateMainWindow()
     {
+        // The capture button: homebrew inherits a refusal by default.
+        appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
+
         // SDL's messages (deko3d's checks among them) straight to the log and
         // flushed: a check that fails ends the process next, and anything
         // left in stderr's buffer is lost with it.
