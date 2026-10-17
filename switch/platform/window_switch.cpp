@@ -24,6 +24,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 namespace h3::debug
 {
@@ -128,6 +130,59 @@ namespace h3::video
                 at = (*end == ',') ? end + 1 : end;
             }
         }
+
+        // H3_WATCH=ADDRESS[,...] (hex): a thread polls each guest word and
+        // logs every change with the threads' last calls, to find who
+        // writes over something (the threads run on, so it's a hint).
+        void StartGuestWatch()
+        {
+            const char* spec = EnvString("H3_WATCH");
+            if (spec == nullptr)
+                return;
+            std::vector<uint32_t> addresses;
+            for (const char* at = spec; *at;)
+            {
+                char* end = nullptr;
+                uint32_t address = uint32_t(strtoul(at, &end, 16));
+                if (end == at)
+                    break;
+                addresses.push_back(address & ~3u);
+                at = (*end == ',') ? end + 1 : end;
+            }
+            std::thread([addresses]
+            {
+                // Guest memory is mapped as it's first used (the image after
+                // this starts): reading before then faults.
+                for (uint32_t address : addresses)
+                {
+                    for (;;)
+                    {
+                        MemoryInfo info{};
+                        u32 page = 0;
+                        if (R_SUCCEEDED(svcQueryMemory(&info, &page, uintptr_t(g_base + address))) &&
+                            info.type != MemType_Unmapped && (info.perm & Perm_R))
+                            break;
+                        svcSleepThread(1'000'000);
+                    }
+                }
+                std::vector<uint32_t> values(addresses.size());
+                for (size_t i = 0; i < addresses.size(); i++)
+                    values[i] = GuestRef<uint32_t>(addresses[i]);
+                for (;;)
+                {
+                    for (size_t i = 0; i < addresses.size(); i++)
+                    {
+                        uint32_t value = GuestRef<uint32_t>(addresses[i]);
+                        if (value == values[i])
+                            continue;
+                        fprintf(stderr, "[watch] %08X: %08X -> %08X\n", addresses[i], values[i], value);
+                        values[i] = value;
+                        kernel::DumpThreads();
+                    }
+                    svcSleepThread(50'000);
+                }
+            }).detach();
+        }
     }
 
     namespace
@@ -223,6 +278,7 @@ namespace h3::video
             consoleUpdate(nullptr);
         }
         input::Initialize();
+        StartGuestWatch();
         return true;
     }
 
