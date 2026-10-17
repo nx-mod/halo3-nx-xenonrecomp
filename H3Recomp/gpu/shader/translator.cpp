@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cctype>
 #include <set>
+#include <vector>
 #include <unordered_map>
 
 namespace h3::gpu::shader
@@ -508,6 +509,7 @@ void main()
             // addressed relatively (which needs them as an indexable array).
             std::set<uint32_t> m_usedRegisters;
             bool m_relativeRegisters = false;
+            bool m_structured = false;  // straight-line body (EmitStructuredBody)
 
             // The body with fixed constant indices renumbered densely
             // (ShaderInfo::compactConstants), for draw shaders that never
@@ -656,9 +658,120 @@ void main()
                 return Format("((xe_sys.bools[%u][%u] & %uu) != 0u)", index >> 7, (index >> 5) & 3, 1u << (index & 31));
             }
 
+            // XenosRecomp's test (shader_recompiler.cpp, simpleControlFlow):
+            // control flow made only of execs and forward conditional jumps
+            // can be written as straight-line code with if blocks. Calls,
+            // returns, loops and unconditional or backward jumps keep the
+            // state machine.
+            bool SimpleControlFlow() const
+            {
+                for (uint32_t i = 0; i < m_cfCount; i++)
+                {
+                    const CfInstruction& cf = m_cf[i];
+                    switch (cf.Opcode())
+                    {
+                    case CfOpcode::CondCall:
+                    case CfOpcode::Return:
+                    case CfOpcode::LoopStart:
+                    case CfOpcode::LoopEnd:
+                        return false;
+                    case CfOpcode::CondJmp:
+                        if (cf.IsUnconditional() || cf.TargetAddress() <= i)
+                            return false;
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                return true;
+            }
+
+            // The structured body (inside do { } while (false): an ending
+            // exec is a break). A forward jump skips to its target, so it
+            // opens if (!condition) { and the block closes at the target,
+            // as XenosRecomp's ifEndLabels do. The state machine made every
+            // shader one loop around a switch, which uam compiles slowly
+            // (0.3-1.5 s a shader on the console) into slow code.
+            void EmitStructuredBody()
+            {
+                std::vector<uint32_t> closeAt(m_cfCount + 1, 0);
+                m_indent = 2;
+                for (uint32_t i = 0; i < m_cfCount && m_error.empty(); i++)
+                {
+                    for (; closeAt[i] > 0; closeAt[i]--)
+                    {
+                        m_indent--;
+                        Line("}");
+                    }
+                    const CfInstruction& cf = m_cf[i];
+                    switch (cf.Opcode())
+                    {
+                    case CfOpcode::Alloc:
+                        if (m_compute)
+                            Line("xe_memexport_flush();");  // a new allocation stores the previous memexport
+                        break;
+                    case CfOpcode::Nop:
+                    case CfOpcode::MarkVsFetchDone:
+                        break;
+                    case CfOpcode::Exec:
+                    case CfOpcode::ExecEnd:
+                        EmitExec(cf);
+                        if (cf.EndsShader())
+                            Line("break;");
+                        break;
+                    case CfOpcode::CondExec:
+                    case CfOpcode::CondExecEnd:
+                    case CfOpcode::CondExecPredClean:
+                    case CfOpcode::CondExecPredCleanEnd:
+                    case CfOpcode::CondExecPred:
+                    case CfOpcode::CondExecPredEnd:
+                    {
+                        bool onPredicate = cf.Opcode() == CfOpcode::CondExecPred || cf.Opcode() == CfOpcode::CondExecPredEnd;
+                        std::string condition = onPredicate ? Format("(p0 == %s)", cf.Condition() ? "true" : "false")
+                                                            : Format("(%s == %s)", BoolConstant(cf.BoolAddress()).c_str(),
+                                                                  cf.Condition() ? "true" : "false");
+                        Line(Format("if %s", condition.c_str()));
+                        Line("{");
+                        m_indent++;
+                        EmitExec(cf);
+                        if (cf.EndsShader())
+                            Line("break;");
+                        m_indent--;
+                        Line("}");
+                        break;
+                    }
+                    case CfOpcode::CondJmp:
+                    {
+                        std::string condition = cf.IsPredicated()
+                            ? Format("(p0 == %s)", cf.Condition() ? "true" : "false")
+                            : Format("(%s == %s)", BoolConstant(cf.BoolAddress()).c_str(), cf.Condition() ? "true" : "false");
+                        Line(Format("if (!%s)", condition.c_str()));
+                        Line("{");
+                        m_indent++;
+                        closeAt[std::min(cf.TargetAddress(), m_cfCount)]++;
+                        break;
+                    }
+                    default:
+                        Fail(Format("control flow opcode %u in a structured body", uint32_t(cf.Opcode())));
+                        return;
+                    }
+                }
+                for (; closeAt[m_cfCount] > 0; closeAt[m_cfCount]--)
+                {
+                    m_indent--;
+                    Line("}");
+                }
+            }
+
             // Emits the control flow state machine: one case per control flow instruction.
             void EmitBody()
             {
+                m_structured = SimpleControlFlow();
+                if (m_structured)
+                {
+                    EmitStructuredBody();
+                    return;
+                }
                 m_indent = 2;
                 for (uint32_t i = 0; i < m_cfCount && m_error.empty(); i++)
                 {
@@ -903,7 +1016,10 @@ void main()
                 {
                 case VectorOpcode::Add: return a + " + " + b;
                 case VectorOpcode::Mul: return "xe_mul(" + a + ", " + b + ")";
-                case VectorOpcode::Max: return "xe_max(" + a + ", " + b + ")";
+                // MAX of a source with itself is the Xbox 360's register copy:
+                // the value itself (uam turns xe_max(a, a) into real work;
+                // nfsmw-nx's shaders.md, "max(a, a) used as a copy").
+                case VectorOpcode::Max: return a == b ? a : "xe_max(" + a + ", " + b + ")";
                 case VectorOpcode::Min: return "xe_min(" + a + ", " + b + ")";
                 case VectorOpcode::Seq: return "vec4(equal(" + a + ", " + b + "))";
                 case VectorOpcode::Sgt: return "vec4(greaterThan(" + a + ", " + b + "))";
@@ -977,7 +1093,7 @@ void main()
                 case ScalarOpcode::MulsPrev2:
                     return "((ps == -XE_FLT_MAX || isinf(ps) || isnan(ps) || isinf(" + b + ") || isnan(" + b + ") || " + b +
                         " <= 0.0) ? -XE_FLT_MAX : xe_mul(" + a + ", ps))";
-                case ScalarOpcode::Maxs: return "(" + a + " >= " + b + " ? " + a + " : " + b + ")";
+                case ScalarOpcode::Maxs: return a == b ? a : "(" + a + " >= " + b + " ? " + a + " : " + b + ")";
                 case ScalarOpcode::Mins: return "(" + a + " < " + b + " ? " + a + " : " + b + ")";
                 case ScalarOpcode::Seqs: return "(" + a + " == 0.0 ? 1.0 : 0.0)";
                 case ScalarOpcode::Sgts: return "(" + a + " > 0.0 ? 1.0 : 0.0)";
@@ -1887,11 +2003,17 @@ vec3 xe_cube_direction(vec3 stf)
                     if (m_info.writesDepth)
                         out += "    vec4 xe_depth = vec4(gl_FragCoord.z);\n";
                 }
-                out += "    int pc = 0;\n    bool running = true;\n";
-                out += "    while (running)\n    {\n        switch (pc)\n        {\n";
-                out += flat ? FlattenRegisters(CompactConstants(m_body)) : CompactConstants(m_body);
-                out += "        default:\n            running = false;\n            break;\n";
-                out += "        }\n    }\n";
+                std::string body = flat ? FlattenRegisters(CompactConstants(m_body)) : CompactConstants(m_body);
+                if (m_structured)
+                    out += "    do\n    {\n" + body + "    } while (false);\n";
+                else
+                {
+                    out += "    int pc = 0;\n    bool running = true;\n";
+                    out += "    while (running)\n    {\n        switch (pc)\n        {\n";
+                    out += body;
+                    out += "        default:\n            running = false;\n            break;\n";
+                    out += "        }\n    }\n";
+                }
                 if (m_vertex)
                 {
                     if (m_compute)
