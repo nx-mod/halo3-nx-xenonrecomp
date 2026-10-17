@@ -155,15 +155,7 @@ namespace h3::gpu::renderer
         // (H3_ASYNC_SHADERS=1/0 overrides), and warm-up from the manifest
         // unless turned off (H3_NO_WARMUP).
         const config::VideoSettings& video = config::Active().video;
-#ifdef __SWITCH__
-        // On the console a new shader costs a UAM compile (tens to hundreds of
-        // ms), so it is always compiled in the background and skipped
-        // meanwhile, as nfsmw-nx does: a menu's worth stalled the game 70 s.
-        constexpr bool kAsyncDefault = true;
-#else
-        const bool kAsyncDefault = video.asyncShaders;
-#endif
-        g_asyncShaders = EnvNumber("H3_ASYNC_SHADERS", kAsyncDefault ? 1 : 0) != 0;
+        g_asyncShaders = EnvNumber("H3_ASYNC_SHADERS", video.asyncShaders ? 1 : 0) != 0;
         if (video.precompileShaders && !EnvFlag("H3_NO_WARMUP"))
             StartShaderWarmup();
 
