@@ -69,7 +69,25 @@ namespace h3::kernel
             }).detach();
         }
 
-        // Returns the guest address of the variable.
+        // Every variable xboxkrnl.exe exports (xboxkrnl_table.inc's
+        // kVariable entries); the other ordinals are functions, whose
+        // import slots stay as they are.
+        bool IsVariable(uint16_t ordinal)
+        {
+            static constexpr uint16_t kVariables[] = {
+                0x00C, 0x00E, 0x012, 0x017, 0x01B, 0x01C, 0x036, 0x03A, 0x03E, 0x059, 0x0AD, 0x0B5,
+                0x0CB, 0x106, 0x112, 0x156, 0x157, 0x158, 0x193, 0x1AE, 0x1AF, 0x1BE, 0x1BF, 0x1C0,
+                0x1C1, 0x25C, 0x266, 0x26B, 0x26D, 0x26E, 0x2AB, 0x2DB, 0x2DC, 0x2F1, 0x345,
+            };
+            for (uint16_t variable : kVariables)
+            {
+                if (variable == ordinal)
+                    return true;
+            }
+            return false;
+        }
+
+        // Returns the guest address of the variable, or 0 for a function.
         uint32_t CreateVariable(uint16_t ordinal)
         {
             switch (ordinal)
@@ -131,6 +149,9 @@ namespace h3::kernel
             case kOrdKeDebugMonitorData:
                 return SystemAlloc(256);
             }
+
+            if (!IsVariable(ordinal))
+                return 0;
 
             // Unpatched, the slot keeps its import record, which the game
             // then reads through: on the PC that lands in reserved memory
