@@ -161,7 +161,8 @@ target_link_libraries(halo3-nx PRIVATE H3RecompLib H3Config H3NativeCache H3Nati
 option(H3_DEKO3D_DEBUG "Link libdeko3dd and create the GPU device in debug mode" OFF)
 if (H3_DEKO3D_DEBUG)
     target_link_options(halo3-nx PRIVATE -Wl,--whole-archive -ldeko3dd -Wl,--no-whole-archive)
-    target_compile_definitions(halo3-nx PRIVATE H3_DEKO3D_DEBUG=1)
+    # Only the file that creates the device: a target-wide define recompiled everything.
+    set_source_files_properties(platform/window_switch.cpp PROPERTIES COMPILE_DEFINITIONS H3_DEKO3D_DEBUG=1)
 endif()
 
 # FFmpeg with the xmaframes decoder, from tools/build_ffmpeg_switch.sh.
