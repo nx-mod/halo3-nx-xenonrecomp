@@ -270,6 +270,14 @@ namespace h3::video
 
     bool CreateMainWindow()
     {
+        // SDL's messages (deko3d's checks among them) straight to the log and
+        // flushed: a check that fails ends the process next, and anything
+        // left in stderr's buffer is lost with it.
+        SDL_SetLogOutputFunction([](void*, int, SDL_LogPriority, const char* message)
+        {
+            fprintf(stderr, "[sdl] %s\n", message);
+            fflush(stderr);
+        }, nullptr);
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
         {
             fprintf(stderr, "[video] SDL_Init failed: %s\n", SDL_GetError());
