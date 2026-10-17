@@ -504,6 +504,10 @@ void main()
             // relative to an address register (CompactConstants).
             std::set<uint32_t> m_usedConstants;
             bool m_relativeConstants = false;
+            // Temporary registers the body uses, and whether any is
+            // addressed relatively (which needs them as an indexable array).
+            std::set<uint32_t> m_usedRegisters;
+            bool m_relativeRegisters = false;
 
             // The body with fixed constant indices renumbered densely
             // (ShaderInfo::compactConstants), for draw shaders that never
@@ -790,8 +794,40 @@ void main()
             std::string TempRegister(uint32_t index, bool relative)
             {
                 if (relative)
+                {
+                    m_relativeRegisters = true;
                     return Format("r[clamp(%u + aL, 0, %u)]", index, kMaxRegisters - 1);
+                }
+                m_usedRegisters.insert(index & (kMaxRegisters - 1));
                 return Format("r[%u]", index & (kMaxRegisters - 1));
+            }
+
+            // The body's r[N] as rN: without relative addressing the
+            // registers are separate variables (see the prologue).
+            static std::string FlattenRegisters(const std::string& body)
+            {
+                std::string out;
+                out.reserve(body.size());
+                size_t at = 0;
+                for (size_t found; (found = body.find("r[", at)) != std::string::npos;)
+                {
+                    size_t digits = found + 2, end = digits;
+                    while (end < body.size() && isdigit(uint8_t(body[end])))
+                        end++;
+                    bool word = found == 0 || !(isalnum(uint8_t(body[found - 1])) || body[found - 1] == '_');
+                    if (!word || end == digits || end >= body.size() || body[end] != ']')
+                    {
+                        out.append(body, at, found + 2 - at);
+                        at = found + 2;
+                        continue;
+                    }
+                    out.append(body, at, found - at);
+                    out += "r";
+                    out.append(body, digits, end - digits);
+                    at = end + 1;
+                }
+                out.append(body, at, std::string::npos);
+                return out;
             }
 
             // GLSL for float constant `index`, optionally indexed by an
@@ -1790,7 +1826,24 @@ vec3 xe_cube_direction(vec3 stf)
                 if (StorageConstants())  // the draw's constants (see the XE_C declaration)
                     out += m_vertex ? "    uint xe_constant_base = xe_constants[gl_InstanceIndex].x;\n"
                                     : "    uint xe_constant_base = xe_ps_constant_base;\n";
-                out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
+                // The temporary registers. As an array indexed at run time
+                // they live in memory (on the Switch's GPU, a kilobyte of
+                // local memory per pixel, read and written all the time: the
+                // frame took 200 ms). Without relative addressing, only the
+                // registers used, as plain variables the compiler keeps in
+                // hardware registers.
+                const bool flat = !m_relativeRegisters;
+                std::set<uint32_t> registers = m_usedRegisters;
+                if (m_vertex)
+                    registers.insert({ 0u, 1u });  // the vertex index or the domain location
+                auto reg = [flat](uint32_t i) { return flat ? Format("r%u", i) : Format("r[%u]", i); };
+                if (flat)
+                {
+                    for (uint32_t i : registers)
+                        out += Format("    vec4 r%u = vec4(0.0);\n", i);
+                }
+                else
+                    out += "    vec4 r[64];\n    for (int i = 0; i < 64; i++) r[i] = vec4(0.0);\n";
                 out += "    int a0 = 0;\n    int aL = 0;\n    bool p0 = false;\n    float ps = 0.0;\n";
                 out += "    int newA0 = 0;\n    bool newP0 = false;\n    bool kill = false;\n";
                 out += "    int loopDepth = -1;\n    int loopSavedAL[4];\n    int loopIteration[4];\n    uint loopConstant[4];\n";
@@ -1803,17 +1856,31 @@ vec3 xe_cube_direction(vec3 stf)
                     // domain location and index instead of a vertex index
                     // (see kVertexMain).
                     out += "    if ((xe_sys.flags & 1024u) != 0u)\n    {\n"
-                           "        r[0].xyz = xe_domain.zyx;\n        r[1].x = float(xe_vertex_index);\n    }\n"
-                           "    else\n        r[0].x = float(xe_vertex_index);\n";
+                           "        " + reg(0) + ".xyz = xe_domain.zyx;\n        " + reg(1) + ".x = float(xe_vertex_index);\n    }\n"
+                           "    else\n        " + reg(0) + ".x = float(xe_vertex_index);\n";
                 }
                 else
                 {
-                    out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
+                    if (flat)
+                    {
+                        for (uint32_t i : registers)
+                            if (i < 16)
+                                out += Format("    r%u = xe_in[%u];\n", i, i);
+                    }
+                    else
+                        out += "    for (int i = 0; i < 16; i++) r[i] = xe_in[i];\n";
                     // The pixel position: samples of one guest pixel share
                     // it, but at a render scale above 1 it keeps steps of
                     // 1/scale so screen-space lookups stay sharp.
-                    out += "    if (xe_sys.ps_param_gen < 64u)\n"
-                           "        r[xe_sys.ps_param_gen] = vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0);\n";
+                    const char* paramGen = "vec4(floor(gl_FragCoord.xy * xe_sys.render_scale / vec2(xe_sys.pixel_scale_x, xe_sys.pixel_scale_y)) / xe_sys.render_scale, gl_FrontFacing ? 0.0 : -0.0, 0.0)";
+                    if (flat)
+                    {
+                        // The register is chosen at run time: one test per used register.
+                        for (uint32_t i : registers)
+                            out += Format("    if (xe_sys.ps_param_gen == %uu) r%u = %s;\n", i, i, paramGen);
+                    }
+                    else
+                        out += std::string("    if (xe_sys.ps_param_gen < 64u)\n        r[xe_sys.ps_param_gen] = ") + paramGen + ";\n";
                     for (uint32_t i = 0; i < 4; i++)
                         if (m_info.colorTargetMask & (1u << i))
                             out += Format("    vec4 xe_color%u = vec4(0.0);\n", i);
@@ -1822,7 +1889,7 @@ vec3 xe_cube_direction(vec3 stf)
                 }
                 out += "    int pc = 0;\n    bool running = true;\n";
                 out += "    while (running)\n    {\n        switch (pc)\n        {\n";
-                out += CompactConstants(m_body);
+                out += flat ? FlattenRegisters(CompactConstants(m_body)) : CompactConstants(m_body);
                 out += "        default:\n            running = false;\n            break;\n";
                 out += "        }\n    }\n";
                 if (m_vertex)
