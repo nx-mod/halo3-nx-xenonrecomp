@@ -535,7 +535,24 @@ namespace h3::video
                 lastStatus = now;
             }
             if (g_device)
-                Present();  // waits for the swapchain: paces the loop
+            {
+                // Present only a new frame (or, for the overlay, twice a
+                // second without one): each present makes the GPU queue wait
+                // for a free swapchain image, and the game's own work queued
+                // behind those waits, a vsync each, took 70-95 ms a frame.
+                static uint64_t presentedSerial = ~0ull;
+                static Clock::time_point lastPresent = Clock::now();
+                gpu::renderer::Frame frame;
+                bool fresh = gpu::renderer::AcquireFrame(frame) && frame.serial != presentedSerial;
+                if (fresh || now - lastPresent >= std::chrono::milliseconds(500))
+                {
+                    presentedSerial = frame.serial;
+                    lastPresent = now;
+                    Present();
+                }
+                else
+                    svcSleepThread(2'000'000);
+            }
             else
                 svcSleepThread(16'000'000);
         }
