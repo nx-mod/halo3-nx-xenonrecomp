@@ -1,3 +1,8 @@
+> **Superseded.** This XenonRecomp/halo-3-recomp based port is archived. Halo 3 for the Switch continues in
+> [nx-mod/halo3-nx](https://github.com/nx-mod/halo3-nx), on the ReXGlue SDK with nfsmw-nx's Switch layer and deko3d
+> renderer, a base meant for several Xbox 360 games. What this repository learned is in its commit history and
+> [docs/SWITCH.md](docs/SWITCH.md).
+
 # halo3-nx
 
 Halo 3 (Xbox 360), recompiled to run natively on the Nintendo Switch as a homebrew NRO.
