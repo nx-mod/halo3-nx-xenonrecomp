@@ -14,10 +14,13 @@
 
 #include "gpu/renderer/internal.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <regex>
+#include <vector>
 
 extern "C" int h3_dk_compile_glsl(int stage, const char* glsl, char** dksh, size_t* size);
 
@@ -83,6 +86,78 @@ namespace h3::gpu::renderer::internal
             return int(binding - counts.samplers - counts.storageTextures);
         }
 
+        // Reads of read-only runtime-sized buffer arrays, made to return zero
+        // past the end as Vulkan's robust buffer access does on the PC: UAM's
+        // compiler has nouveau's bounds checks taken out, so an index past
+        // the end reads whatever GPU memory follows, and an unmapped page
+        // faults the GPU (an MMU fault in the middle of a draw). Each
+        // name[index] becomes xe_read_name(index), defined after the block.
+        std::string GuardBufferReads(const std::string& glsl)
+        {
+            static const std::regex block(R"(readonly\s+buffer\s+\w+\s*\{\s*(\w+)\s+(\w+)\s*\[\s*\]\s*;\s*\}\s*;)");
+            struct Array { std::string type, name; };
+            std::vector<Array> arrays;
+            std::string out;
+            out.reserve(glsl.size() + 512);
+            auto last = glsl.cbegin();
+            for (std::sregex_iterator it(glsl.begin(), glsl.end(), block), end; it != end; ++it)
+            {
+                const std::smatch& match = *it;
+                Array array{ match[1].str(), match[2].str() };
+                out.append(last, match[0].second);
+                out += "\n" + array.type + " xe_read_" + array.name + "(uint i) { return i < uint(" + array.name +
+                    ".length()) ? " + array.name + "[i] : " + array.type + "(0); }";
+                last = match[0].second;
+                arrays.push_back(std::move(array));
+            }
+            out.append(last, glsl.cend());
+
+            // name[index] -> xe_read_name(uint(index)) in text, the index
+            // guarded the same way first (it may read a buffer too).
+            std::function<std::string(const std::string&, const Array&)> guard = [&guard](const std::string& out, const Array& array)
+            {
+                const std::string from = array.name + "[";
+                const std::string helper = "xe_read_" + array.name + "(uint i)";
+                std::string guarded;
+                guarded.reserve(out.size());
+                size_t at = 0;
+                for (size_t found; (found = out.find(from, at)) != std::string::npos;)
+                {
+                    bool word = found == 0 || !(isalnum(uint8_t(out[found - 1])) || out[found - 1] == '_');
+                    size_t open = found + from.size() - 1;
+                    // Leave the declaration (name[]) and the helper's own read alone.
+                    bool declaration = open + 1 < out.size() && out[open + 1] == ']';
+                    size_t helperAt = out.rfind(helper, found);
+                    bool inHelper = helperAt != std::string::npos && out.find('}', helperAt) > found;
+                    if (!word || declaration || inHelper)
+                    {
+                        guarded.append(out, at, open + 1 - at);
+                        at = open + 1;
+                        continue;
+                    }
+                    int depth = 0;
+                    size_t close = open;
+                    for (; close < out.size(); close++)
+                    {
+                        if (out[close] == '[')
+                            depth++;
+                        else if (out[close] == ']' && --depth == 0)
+                            break;
+                    }
+                    if (close >= out.size())
+                        break;
+                    guarded.append(out, at, found - at);
+                    guarded += "xe_read_" + array.name + "(uint(" + guard(out.substr(open + 1, close - open - 1), array) + "))";
+                    at = close + 1;
+                }
+                guarded.append(out, at, std::string::npos);
+                return guarded;
+            };
+            for (const Array& array : arrays)
+                out = guard(out, array);
+            return out;
+        }
+
         std::string ToDekoGlsl(int stage, const std::string& glsl, const Counts& counts, std::string& error)
         {
             static const std::regex layout(R"(layout\s*\(([^)]*)\))");
@@ -120,10 +195,24 @@ namespace h3::gpu::renderer::internal
             }
             out.append(last, glsl.cend());
 
+            out = GuardBufferReads(out);
+
+            // gl_VertexID counts from the first vertex (or the base vertex) as
+            // gl_VertexIndex does; gl_InstanceID starts at 0 whatever the
+            // first instance, which the renderer uses to pass the draw's
+            // header, so the base instance (deko3d keeps it in the driver
+            // constbuf) is added back.
             static const std::regex vertexIndex(R"(\bgl_VertexIndex\b)");
             static const std::regex instanceIndex(R"(\bgl_InstanceIndex\b)");
             out = std::regex_replace(out, vertexIndex, "gl_VertexID");
-            return std::regex_replace(out, instanceIndex, "gl_InstanceID");
+            if (std::regex_search(out, instanceIndex))
+            {
+                out = std::regex_replace(out, instanceIndex, "(gl_InstanceID + gl_BaseInstanceARB)");
+                size_t version = out.find("#version");
+                size_t line = version == std::string::npos ? 0 : out.find('\n', version) + 1;
+                out.insert(line, "#extension GL_ARB_shader_draw_parameters : require\n");
+            }
+            return out;
         }
 
         // DKSH for GLSL: from the cache, or compiled and stored there.
