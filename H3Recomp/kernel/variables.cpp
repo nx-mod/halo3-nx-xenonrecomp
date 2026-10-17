@@ -7,6 +7,7 @@
 #include "../memory.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string_view>
@@ -21,6 +22,7 @@ namespace h3::kernel
         enum : uint16_t
         {
             kOrdExThreadObjectType = 0x01B,
+            kOrdKeDebugMonitorData = 0x059,
             kOrdKeTimeStampBundle = 0x0AD,
             kOrdXboxKrnlVersion = 0x158,
             kOrdXexExecutableModuleHandle = 0x193,
@@ -67,7 +69,7 @@ namespace h3::kernel
             }).detach();
         }
 
-        // Returns the guest address of the variable, or 0 if it's unknown.
+        // Returns the guest address of the variable.
         uint32_t CreateVariable(uint16_t ordinal)
         {
             switch (ordinal)
@@ -122,8 +124,20 @@ namespace h3::kernel
             case kOrdVdGlobalDevice:
             case kOrdKeCertMonitorData:
                 return SystemAlloc(4);
+
+            // Set when a debugger is attached; the game reads a pointer
+            // from it and skips the debugger's handler when that is zero.
+            // Xenia gives it 256 zeroed bytes.
+            case kOrdKeDebugMonitorData:
+                return SystemAlloc(256);
             }
-            return 0;
+
+            // Unpatched, the slot keeps its import record, which the game
+            // then reads through: on the PC that lands in reserved memory
+            // and reads zero, on the Switch (memory mapped as allocated)
+            // it faults. Zeroed memory does what the PC does.
+            fprintf(stderr, "[kernel] unknown kernel variable 0x%03X: given zeroed memory\n", ordinal);
+            return SystemAlloc(256);
         }
     }
 
