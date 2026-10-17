@@ -221,7 +221,13 @@ namespace h3::video
             else if (!gpu::renderer::Initialize(g_device))
                 fprintf(stderr, "[video] the renderer didn't start\n");
             else
+            {
+                // Swap interval 0: on Horizon it doesn't tear (the compositor
+                // still shows a frame per refresh), it only stops the program
+                // waiting for one (nfsmw-nx's platform-notes.md, "Presentation").
+                SDL_SetGPUSwapchainParameters(g_device, g_window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_IMMEDIATE);
                 return true;
+            }
             if (g_device)
                 SDL_DestroyGPUDevice(g_device);
             SDL_DestroyWindow(g_window);
@@ -428,6 +434,20 @@ namespace h3::video
 
     bool CreateMainWindow()
     {
+        // The handheld GPU: a homebrew program starts at 307.2 MHz; the official
+        // configuration 0x92220008 is 460.8 MHz with the memory left at
+        // 1331.2 MHz, what nfsmw-nx asks for (sdk/src/ui/switch_apm.cpp). Not
+        // an overclock. Docked, the GPU is at 768 MHz already.
+        if (R_SUCCEEDED(apmInitialize()))
+        {
+            ApmPerformanceMode mode = ApmPerformanceMode_Invalid;
+            if (R_SUCCEEDED(apmGetPerformanceMode(&mode)) && mode == ApmPerformanceMode_Normal)
+            {
+                Result rc = apmSetPerformanceConfiguration(mode, 0x92220008);
+                fprintf(stderr, "[video] handheld GPU 460.8 MHz (configuration 0x92220008): %s\n", R_SUCCEEDED(rc) ? "set" : "refused");
+            }
+        }
+
         // The capture button: homebrew inherits a refusal by default.
         appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
         platform::StartSampler();
