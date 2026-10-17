@@ -114,6 +114,7 @@ add_executable(halo3-nx
     platform/window_switch.cpp
     platform/shaders_switch.cpp
     platform/icon_switch.cpp
+    platform/sampler_switch.cpp
     platform/capture_null.cpp
     platform/threads_switch.cpp
     platform/debug_null.cpp

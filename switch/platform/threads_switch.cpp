@@ -22,6 +22,11 @@
 #include <cstddef>
 #include <new>
 
+namespace h3::platform
+{
+    void RegisterSampledThread(Handle thread);  // sampler_switch.cpp (H3_SAMPLE)
+}
+
 namespace
 {
     constexpr size_t kMinStackSize = 8 * 1024 * 1024;
@@ -43,6 +48,7 @@ namespace
         delete static_cast<Start*>(parameter);
         svcSetThreadPriority(CUR_THREAD_HANDLE, kTimeSlicedPriority);
         svcSetThreadCoreMask(CUR_THREAD_HANDLE, start.preferredCore, kApplicationCores);
+        h3::platform::RegisterSampledThread(threadGetCurHandle());
         return start.routine(start.argument);
     }
 }

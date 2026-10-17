@@ -56,6 +56,16 @@ namespace h3::native::tags
     void RuntimeChangeReport();
 }
 
+namespace h3::gpu::renderer::internal
+{
+    extern std::atomic<uint32_t> g_shadersCompiled;  // shaders_switch.cpp
+}
+
+namespace h3::platform
+{
+    void StartSampler();  // sampler_switch.cpp (H3_SAMPLE)
+}
+
 namespace h3::video
 {
     namespace
@@ -220,6 +230,153 @@ namespace h3::video
             return false;
         }
 
+        // The frame rate overlay, as haloce-nx draws it: "30 FPS  41 MS  12
+        // SHADERS", the game's frames over the last second, the slowest of
+        // them and the shaders compiled on the console this run, in a 3x5
+        // bitmap font. haloce-nx clears scissored rectangles; SDL_GPU has no
+        // such clear, so each rectangle is a 2D-engine blit of a 1x1 texture
+        // instead, and it needs no shader of its own. H3_OVERLAY=0 hides it.
+        namespace overlay
+        {
+            // The rows of each character, top first, the left column the 4 bit.
+            const uint8_t* Glyph(char c)
+            {
+                static const struct { char c; uint8_t rows[5]; } kFont[] = {
+                    { '0', { 7, 5, 5, 5, 7 } }, { '1', { 2, 6, 2, 2, 7 } }, { '2', { 7, 1, 7, 4, 7 } },
+                    { '3', { 7, 1, 7, 1, 7 } }, { '4', { 5, 5, 7, 1, 1 } }, { '5', { 7, 4, 7, 1, 7 } },
+                    { '6', { 7, 4, 7, 5, 7 } }, { '7', { 7, 1, 1, 1, 1 } }, { '8', { 7, 5, 7, 5, 7 } },
+                    { '9', { 7, 5, 7, 1, 7 } }, { 'A', { 2, 5, 7, 5, 5 } }, { 'D', { 6, 5, 5, 5, 6 } },
+                    { 'E', { 7, 4, 6, 4, 7 } }, { 'F', { 7, 4, 6, 4, 4 } }, { 'H', { 5, 5, 7, 5, 5 } },
+                    { 'M', { 5, 7, 7, 5, 5 } }, { 'P', { 6, 5, 6, 4, 4 } }, { 'R', { 6, 5, 6, 5, 5 } },
+                    { 'S', { 7, 4, 7, 1, 7 } },
+                };
+                for (const auto& glyph : kFont)
+                {
+                    if (glyph.c == c)
+                        return glyph.rows;
+                }
+                return nullptr;
+            }
+
+            SDL_GPUTexture* g_dark = nullptr;
+            SDL_GPUTexture* g_light = nullptr;
+
+            // The two 1x1 textures, uploaded in this command buffer. False if
+            // they can't be made.
+            bool Ensure(SDL_GPUCommandBuffer* commands)
+            {
+                if (g_dark && g_light)
+                    return true;
+                SDL_GPUTextureCreateInfo info{};
+                info.type = SDL_GPU_TEXTURETYPE_2D;
+                info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+                info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                info.width = info.height = info.layer_count_or_depth = info.num_levels = 1;
+                g_dark = SDL_CreateGPUTexture(g_device, &info);
+                g_light = SDL_CreateGPUTexture(g_device, &info);
+                SDL_GPUTransferBufferCreateInfo transferInfo{ SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, 8, 0 };
+                SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(g_device, &transferInfo);
+                if (!g_dark || !g_light || !transfer)
+                    return false;
+                auto* pixels = static_cast<uint32_t*>(SDL_MapGPUTransferBuffer(g_device, transfer, false));
+                pixels[0] = 0xFF000000;  // black, RGBA in memory order
+                pixels[1] = 0xFFE6E6E6;
+                SDL_UnmapGPUTransferBuffer(g_device, transfer);
+                SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(commands);
+                SDL_GPUTextureTransferInfo source{ transfer, 0, 1, 1 };
+                SDL_GPUTextureRegion region{};
+                region.w = region.h = region.d = 1;
+                region.texture = g_dark;
+                SDL_UploadToGPUTexture(copy, &source, &region, false);
+                source.offset = 4;
+                region.texture = g_light;
+                SDL_UploadToGPUTexture(copy, &source, &region, false);
+                SDL_EndGPUCopyPass(copy);
+                SDL_ReleaseGPUTransferBuffer(g_device, transfer);
+                return true;
+            }
+
+            void Rectangle(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* screen, SDL_GPUTexture* shade, int x, int y, int w, int h)
+            {
+                SDL_GPUBlitInfo blit{};
+                blit.source.texture = shade;
+                blit.source.w = blit.source.h = 1;
+                blit.destination.texture = screen;
+                blit.destination.x = Uint32(x);
+                blit.destination.y = Uint32(y);
+                blit.destination.w = Uint32(w);
+                blit.destination.h = Uint32(h);
+                blit.load_op = SDL_GPU_LOADOP_LOAD;
+                blit.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(commands, &blit);
+            }
+
+            void Draw(SDL_GPUCommandBuffer* commands, SDL_GPUTexture* screen, Uint32 screenWidth, Uint32 screenHeight)
+            {
+                using Clock = std::chrono::steady_clock;
+                static const bool hidden = [] { const char* v = EnvString("H3_OVERLAY"); return v && strcmp(v, "0") == 0; }();
+                static Clock::time_point secondStart = Clock::now(), lastChange = Clock::now();
+                static uint32_t secondFrames = 0, lastFrame = 0, fps = 0;
+                static double slowest = 0, slowestShown = 0;
+
+                // The numbers, every present; shown as of the last whole second.
+                auto now = Clock::now();
+                uint32_t frame = g_framesPresented.load();
+                if (frame != lastFrame)
+                {
+                    slowest = std::max(slowest, std::chrono::duration<double>(now - lastChange).count());
+                    secondFrames += frame - lastFrame;
+                    lastFrame = frame;
+                    lastChange = now;
+                }
+                double second = std::chrono::duration<double>(now - secondStart).count();
+                if (second >= 1.0)
+                {
+                    // A frame that hasn't come for the whole second counts too.
+                    slowestShown = std::max(slowest, std::chrono::duration<double>(now - lastChange).count());
+                    fps = uint32_t(secondFrames / second + 0.5);
+                    secondFrames = 0;
+                    slowest = 0;
+                    secondStart = now;
+                }
+                if (hidden || !Ensure(commands))
+                    return;
+
+                char text[64];
+                int length = snprintf(text, sizeof(text), "%u FPS  %u MS  %u SHADERS", fps, unsigned(slowestShown * 1000.0 + 0.5),
+                    gpu::renderer::internal::g_shadersCompiled.load());
+                length = std::clamp(length, 0, int(sizeof(text)) - 1);
+                // 4 pixels a cell at 720 lines; a character is 3 cells and a
+                // space of 1; a dark box a cell wider all round; centred
+                // across, at the top.
+                int cell = std::max(int(screenHeight) / 180, 2);
+                int x = std::max((int(screenWidth) - (length * 4 - 1) * cell) / 2, cell);
+                int y = cell * 3;
+                Rectangle(commands, screen, g_dark, x - cell, y - cell, (length * 4 + 1) * cell, cell * 7);
+                for (int index = 0; index < length; index++)
+                {
+                    const uint8_t* rows = Glyph(text[index]);
+                    if (!rows)
+                        continue;
+                    for (int row = 0; row < 5; row++)
+                    {
+                        for (int column = 0; column < 3;)
+                        {
+                            if (!(rows[row] & (4 >> column)))
+                            {
+                                column++;
+                                continue;
+                            }
+                            int start = column;
+                            while (column < 3 && (rows[row] & (4 >> column)))
+                                column++;
+                            Rectangle(commands, screen, g_light, x + (index * 4 + start) * cell, y + row * cell, (column - start) * cell, cell);
+                        }
+                    }
+                }
+            }
+        }
+
         // The renderer's latest frame, scaled to fit the screen with its
         // aspect ratio kept (black bars), then presented. Main thread.
         void Present()
@@ -264,6 +421,7 @@ namespace h3::video
                 target.clear_color = blit.clear_color;
                 SDL_EndGPURenderPass(SDL_BeginGPURenderPass(commands, &target, 1, nullptr));
             }
+            overlay::Draw(commands, screen, width, height);
             SDL_SubmitGPUCommandBuffer(commands);
         }
     }
@@ -272,6 +430,7 @@ namespace h3::video
     {
         // The capture button: homebrew inherits a refusal by default.
         appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
+        platform::StartSampler();
 
         // SDL's messages (deko3d's checks among them) straight to the log and
         // flushed: a check that fails ends the process next, and anything

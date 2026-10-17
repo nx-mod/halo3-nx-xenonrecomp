@@ -14,6 +14,7 @@
 
 #include "gpu/renderer/internal.h"
 
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,10 @@ extern "C" int h3_dk_compile_glsl(int stage, const char* glsl, char** dksh, size
 
 namespace h3::gpu::renderer::internal
 {
+    // Shaders UAM compiled this run (the rest came from the cache), for the
+    // frame rate overlay.
+    std::atomic<uint32_t> g_shadersCompiled{ 0 };
+
     namespace
     {
         enum class Kind { Sampler, StorageTexture, StorageBuffer, Uniform };
@@ -262,6 +267,7 @@ namespace h3::gpu::renderer::internal
             }
             std::vector<uint8_t> result(dksh, dksh + dkshSize);
             free(dksh);
+            g_shadersCompiled++;
             if (!path.empty())
             {
                 // Write then rename, so a killed run never leaves half a file.
