@@ -86,16 +86,19 @@ namespace h3::gpu::renderer::internal
             return int(binding - counts.samplers - counts.storageTextures);
         }
 
-        // Reads of read-only runtime-sized buffer arrays, made to return zero
-        // past the end as Vulkan's robust buffer access does on the PC: UAM's
-        // compiler has nouveau's bounds checks taken out, so an index past
-        // the end reads whatever GPU memory follows, and an unmapped page
-        // faults the GPU (an MMU fault in the middle of a draw). Each
-        // name[index] becomes xe_read_name(index), defined after the block.
+        // Runtime-sized buffer arrays, kept inside their buffer as Vulkan's
+        // robust buffer access keeps them on the PC: UAM's compiler has
+        // nouveau's bounds checks taken out, so an index past the end reads
+        // or writes whatever GPU memory follows. A read of an unmapped page
+        // faults the GPU; a write can land in the next memory block, command
+        // memory among them. A read-only array's name[index] becomes
+        // xe_read_name(index), zero past the end, defined after the block; a
+        // writable one's index is clamped to the last element (it may be
+        // written or used atomically, so it has to stay an lvalue).
         std::string GuardBufferReads(const std::string& glsl)
         {
-            static const std::regex block(R"(readonly\s+buffer\s+\w+\s*\{\s*(\w+)\s+(\w+)\s*\[\s*\]\s*;\s*\}\s*;)");
-            struct Array { std::string type, name; };
+            static const std::regex block(R"((readonly\s+)?buffer\s+\w+\s*\{\s*(\w+)\s+(\w+)\s*\[\s*\]\s*;\s*\}\s*;)");
+            struct Array { std::string type, name; bool readOnly; };
             std::vector<Array> arrays;
             std::string out;
             out.reserve(glsl.size() + 512);
@@ -103,10 +106,11 @@ namespace h3::gpu::renderer::internal
             for (std::sregex_iterator it(glsl.begin(), glsl.end(), block), end; it != end; ++it)
             {
                 const std::smatch& match = *it;
-                Array array{ match[1].str(), match[2].str() };
+                Array array{ match[2].str(), match[3].str(), match[1].matched };
                 out.append(last, match[0].second);
-                out += "\n" + array.type + " xe_read_" + array.name + "(uint i) { return i < uint(" + array.name +
-                    ".length()) ? " + array.name + "[i] : " + array.type + "(0); }";
+                if (array.readOnly)
+                    out += "\n" + array.type + " xe_read_" + array.name + "(uint i) { return i < uint(" + array.name +
+                        ".length()) ? " + array.name + "[i] : " + array.type + "(0); }";
                 last = match[0].second;
                 arrays.push_back(std::move(array));
             }
@@ -147,7 +151,11 @@ namespace h3::gpu::renderer::internal
                     if (close >= out.size())
                         break;
                     guarded.append(out, at, found - at);
-                    guarded += "xe_read_" + array.name + "(uint(" + guard(out.substr(open + 1, close - open - 1), array) + "))";
+                    std::string index = guard(out.substr(open + 1, close - open - 1), array);
+                    if (array.readOnly)
+                        guarded += "xe_read_" + array.name + "(uint(" + index + "))";
+                    else
+                        guarded += array.name + "[min(uint(" + index + "), uint(" + array.name + ".length()) - 1u)]";
                     at = close + 1;
                 }
                 guarded.append(out, at, std::string::npos);
