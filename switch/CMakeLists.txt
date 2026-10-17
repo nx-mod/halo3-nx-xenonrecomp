@@ -152,6 +152,16 @@ find_package(SDL3 REQUIRED CONFIG)
 target_link_libraries(halo3-nx PRIVATE H3RecompLib H3Config H3NativeCache H3NativeTags
     ${H3_MODULES} ${H3_MODULE_STUBS} SDL3::SDL3-static)
 
+# deko3d's debug build: it checks every call and reports what was wrong
+# through SDL_GPU's debug callback (debug mode is on with it) instead of
+# aborting with a bare result code. Whole-archive, so its objects stand in
+# for the release library SDL3 pulls in.
+option(H3_DEKO3D_DEBUG "Link libdeko3dd and create the GPU device in debug mode" OFF)
+if (H3_DEKO3D_DEBUG)
+    target_link_options(halo3-nx PRIVATE -Wl,--whole-archive -ldeko3dd -Wl,--no-whole-archive)
+    target_compile_definitions(halo3-nx PRIVATE H3_DEKO3D_DEBUG=1)
+endif()
+
 # FFmpeg with the xmaframes decoder, from tools/build_ffmpeg_switch.sh.
 set(H3_FFMPEG_DIR ${H3_ROOT}/build/ffmpeg-switch)
 if (NOT EXISTS ${H3_FFMPEG_DIR}/lib/libavcodec.a)

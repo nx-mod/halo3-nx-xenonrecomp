@@ -200,7 +200,12 @@ namespace h3::video
                 fprintf(stderr, "[video] SDL_CreateWindow failed: %s\n", SDL_GetError());
                 return false;
             }
-            g_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_PRIVATE, false, "deko3d");
+#ifdef H3_DEKO3D_DEBUG
+            constexpr bool kGpuDebug = true;  // deko3d's checks report through SDL's log
+#else
+            constexpr bool kGpuDebug = false;
+#endif
+            g_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_PRIVATE, kGpuDebug, "deko3d");
             if (!g_device || !SDL_ClaimWindowForGPUDevice(g_device, g_window))
                 fprintf(stderr, "[video] no deko3d device: %s\n", SDL_GetError());
             else if (!gpu::renderer::Initialize(g_device))

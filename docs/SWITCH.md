@@ -60,7 +60,7 @@ title update), SHA-1 `927a8c49062a55179d84116e33f8a5a0b3db13c1`
 
 ## XenonRecomp
 
-The submodule is [nx-mod/XenonRecomp](https://github.com/nx-mod/XenonRecomp),
+The submodule is [nx-mod/xenonrecomp-nx](https://github.com/nx-mod/xenonrecomp-nx),
 branch `halo3-nx`: upstream's 12 unpublished instructions done again (lvxl128,
 stvlxl128, vandc, vsel128, vctuxs, vpkuwus, vpkswss, lhbrx, frsqrte, eqv,
 mulhdu, dcbst), blrl, the vupkd3d128/vpkd3d128 formats from the ReXGlue SDK,
