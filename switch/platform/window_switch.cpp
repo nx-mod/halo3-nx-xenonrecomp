@@ -295,9 +295,13 @@ namespace h3::video
         return true;
     }
 
+    void WriteForwarderIcon();  // icon_switch.cpp
+
     int RunEventLoop()
     {
         using Clock = std::chrono::steady_clock;
+
+        WriteForwarderIcon();  // the executable is loaded by now
 
         uint32_t lastFrame = 0;
         auto lastStatus = Clock::now();

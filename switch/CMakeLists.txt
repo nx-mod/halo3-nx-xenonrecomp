@@ -113,6 +113,7 @@ add_executable(halo3-nx
     # signals) left out, and the fibers' context switch.
     platform/window_switch.cpp
     platform/shaders_switch.cpp
+    platform/icon_switch.cpp
     platform/capture_null.cpp
     platform/threads_switch.cpp
     platform/debug_null.cpp
@@ -169,6 +170,10 @@ if (NOT EXISTS ${H3_FFMPEG_DIR}/lib/libavcodec.a)
 endif()
 target_include_directories(halo3-nx BEFORE PRIVATE ${H3_FFMPEG_DIR}/include)
 target_link_libraries(halo3-nx PRIVATE ${H3_FFMPEG_DIR}/lib/libavcodec.a ${H3_FFMPEG_DIR}/lib/libavutil.a m)
+# libjpeg (portlibs) writes the forwarder icon (platform/icon_switch.cpp).
+# Only there: portlibs also carries FFmpeg headers, which must not stand in for ours.
+set_source_files_properties(platform/icon_switch.cpp PROPERTIES INCLUDE_DIRECTORIES ${DEVKITPRO}/portlibs/switch/include)
+target_link_libraries(halo3-nx PRIVATE ${DEVKITPRO}/portlibs/switch/lib/libjpeg.a)
 
 nx_generate_nacp(halo3-nx.nacp NAME "Halo 3" AUTHOR "nx-mod" VERSION "0.1")
 nx_create_nro(halo3-nx NACP halo3-nx.nacp)
