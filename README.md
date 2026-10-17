@@ -54,10 +54,9 @@ cmake --build build-switch    # -> build-switch/switch/halo3-nx.nro
 
 ## Installing
 
-- Copy the NRO to `sdmc:/switch/halo3-nx/halo3-nx.nro`.
-- Put `default.xex` and the disc's files in `sdmc:/halo3-nx/`.
+- Put the NRO in `sdmc:/halo3-nx/`, together with `default.xex` and the disc's files.
 
-The game writes these beside them:
+The game writes these there:
 
 - `halo3.log` and `halo3-err.log`, the logs;
 - `hdd/`, the cache partitions and saves;
