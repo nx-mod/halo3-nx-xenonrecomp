@@ -121,9 +121,11 @@ namespace h3::gpu::renderer
         if (setting && strcmp(setting, "0") == 0)
             return false;
         g_device = device;
+#ifndef __SWITCH__
         g_compiler = shaderc_compiler_initialize();
         if (!g_compiler)
             return false;
+#endif
 
         if (!SDL_GPUTextureSupportsFormat(device, g_depthFormat, SDL_GPU_TEXTURETYPE_2D,
                 SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER))

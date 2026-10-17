@@ -40,10 +40,13 @@ is the runtime around it.
    the three application cores. Waits, events and timers on libnx's
    primitives; file I/O from `sdmc:/halo3-nx/` (disc read-only, `hdd/`
    writable).
-4. **Graphics.** The renderer is written against SDL_GPU (Vulkan). Port it to
-   deko3d: the shader translator already emits GLSL, which deko3d's UAM
-   compiles on the device. (The alternative, SDL_GPU on the nxvk Vulkan
-   driver, is a quicker first picture but slower.)
+4. **Graphics.** The renderer is written against SDL_GPU (Vulkan), and runs
+   unchanged on sdl3-nx's deko3d backend. Its Vulkan GLSL is compiled on the
+   device with UAM (switch/uam, the Switch build of it from haloce-nx), after
+   switch/platform/shaders_switch.cpp renumbers SDL_GPU's descriptor sets as
+   deko3d's per-kind bindings; DKSH is cached in `shadercache/`. The window
+   (switch/platform/window_switch.cpp) blits each finished frame onto the
+   swapchain, letterboxed. H3_RENDER=0 goes back to the text console.
 5. **Audio and input.** audren for the XAudio driver output; FFmpeg's XMA
    decoder cross-built for AArch64; HID pads for XInput.
 6. **Speed.** Overclock, low internal resolution, then the hot functions as

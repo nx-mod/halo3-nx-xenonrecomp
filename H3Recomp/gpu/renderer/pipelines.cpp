@@ -302,7 +302,7 @@ namespace h3::gpu::renderer::internal
             // this order.
             info.num_storage_buffers = (vertex ? 2 : 0) + (g_uniformConstants ? 0 : 1);
             info.num_uniform_buffers = kShaderUniformBuffers;
-            SDL_GPUShader* shader = SDL_CreateGPUShader(g_device, &info);
+            SDL_GPUShader* shader = CreateGpuShader(info);
             if (!shader)
                 LogOnce(std::string("SDL_CreateGPUShader failed: ") + SDL_GetError());
             return shader;

@@ -360,7 +360,7 @@ void main()
             create.num_uniform_buffers = 1;
             create.threadcount_x = kThreadsPerGroup;
             create.threadcount_y = create.threadcount_z = 1;
-            g_scatterPipeline = SDL_CreateGPUComputePipeline(g_device, &create);
+            g_scatterPipeline = CreateGpuComputePipeline(create);
             return g_scatterPipeline != nullptr;
         }
 
@@ -713,7 +713,7 @@ void main()
             info.num_uniform_buffers = 3;            // constants, system, export info
             info.threadcount_x = kThreadsPerGroup;
             info.threadcount_y = info.threadcount_z = 1;
-            pipeline = SDL_CreateGPUComputePipeline(g_device, &info);
+            pipeline = CreateGpuComputePipeline(info);
             if (!pipeline)
                 LogOnce(std::string("memexport compute pipeline creation failed: ") + SDL_GetError());
             return pipeline;

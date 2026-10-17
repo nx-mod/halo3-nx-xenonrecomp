@@ -31,7 +31,9 @@
 #include "memory.h"
 
 #include <SDL3/SDL.h>
+#ifndef __SWITCH__
 #include <shaderc/shaderc.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -142,7 +144,9 @@ namespace h3::gpu::renderer::internal
     // Depth format of every depth target (falls back to D24S8 where D32S8
     // isn't supported).
     inline SDL_GPUTextureFormat g_depthFormat = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+#ifndef __SWITCH__
     inline shaderc_compiler_t g_compiler = nullptr;
+#endif
     inline SDL_GPUSampler* g_sampler = nullptr;       // linear clamp, for placeholders
     inline SDL_GPUSampler* g_pointSampler = nullptr;  // nearest clamp, for copies
     inline bool g_noTextures = false;   // H3_NO_TEXTURES: placeholders instead of textures from memory
@@ -287,6 +291,12 @@ namespace h3::gpu::renderer::internal
     {
         return CompileSpirv(vertex ? ShaderStage::Vertex : ShaderStage::Fragment, glsl, cacheName);
     }
+    // SDL_CreateGPUShader and SDL_CreateGPUComputePipeline for code from
+    // CompileSpirv. On the Switch that code is the GLSL itself, which
+    // switch/platform/shaders_switch.cpp compiles for deko3d here, where the
+    // resource counts its bindings depend on are known.
+    SDL_GPUShader* CreateGpuShader(const SDL_GPUShaderCreateInfo& info);
+    SDL_GPUComputePipeline* CreateGpuComputePipeline(const SDL_GPUComputePipelineCreateInfo& info);
 
     // ------------------------------------------------------------------
     // Shader and pipeline creation (pipelines.cpp)

@@ -54,6 +54,20 @@ add_executable(halo3-nx
     ${R}/main.cpp
     ${R}/memory.cpp
     ${R}/gpu/command_processor.cpp
+    ${R}/gpu/renderer.cpp
+    ${R}/gpu/renderer/copy.cpp
+    ${R}/gpu/renderer/debug.cpp
+    ${R}/gpu/renderer/draw.cpp
+    ${R}/gpu/renderer/memexport.cpp
+    ${R}/gpu/renderer/pipelines.cpp
+    ${R}/gpu/renderer/postprocess.cpp
+    ${R}/gpu/renderer/queries.cpp
+    ${R}/gpu/renderer/resolve.cpp
+    ${R}/gpu/renderer/shaders.cpp
+    ${R}/gpu/renderer/targets.cpp
+    ${R}/gpu/renderer/textures.cpp
+    ${R}/gpu/shader/translator.cpp
+    ${R}/gpu/texture.cpp
     ${R}/input/input.cpp
     ${R}/debug/first_calls.cpp
     ${R}/debug/state_hash.cpp
@@ -94,11 +108,12 @@ add_executable(halo3-nx
     ${H3_NATIVE_SOURCES}
     ${H3_PPC_DIR}/import_stubs.cpp
     ${H3_MODULE_REGISTRY}
-    # Switch platform: the window without a GPU device, no host rendering
-    # yet (the command processor still consumes the ring), the profiler
-    # (POSIX signals) left out, and the fibers' context switch.
+    # Switch platform: the window on SDL_GPU's deko3d backend, shaders
+    # compiled for it with UAM, no frame captures, the profiler (POSIX
+    # signals) left out, and the fibers' context switch.
     platform/window_switch.cpp
-    platform/renderer_null.cpp
+    platform/shaders_switch.cpp
+    platform/capture_null.cpp
     platform/threads_switch.cpp
     platform/debug_null.cpp
     platform/env_switch.cpp
@@ -113,6 +128,26 @@ target_link_options(halo3-nx PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthrea
 # (__savegprlr_14...), identical code under the same names; any one will do.
 # UnleashedRecomp-NX's Switch toolchain links this way too.
 target_link_options(halo3-nx PRIVATE -Wl,--allow-multiple-definition)
+# UAM, deko3d's shader compiler, for the renderer's shaders
+# (platform/shaders_switch.cpp): the Switch build of it Halo CE's deko3d port
+# makes (nx-mod/haloce-nx, patched to compile from several threads), as one
+# object with its symbols renamed (tools/h3-uam-object).
+set(H3_UAM_SOURCE_DIR "${H3_ROOT}/../haloce-nx/build/switch/third_party/uam" CACHE PATH "UAM's patched source tree")
+set(H3_UAM_BUILD_DIR "${H3_ROOT}/../haloce-nx/build/switch/uam" CACHE PATH "The folder holding UAM's Switch libuam.a and meson/")
+if (NOT EXISTS "${H3_UAM_BUILD_DIR}/libuam.a" OR NOT EXISTS "${H3_UAM_SOURCE_DIR}/source/compiler_iface.h")
+    message(FATAL_ERROR "Rendering needs UAM built for the Switch: build haloce-nx's Switch port, or set H3_UAM_SOURCE_DIR and H3_UAM_BUILD_DIR")
+endif()
+set(H3_UAM_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/uam_compiler.o")
+add_custom_command(
+    OUTPUT "${H3_UAM_OBJECT}"
+    COMMAND "${H3_ROOT}/tools/h3-uam-object" "${CMAKE_CXX_COMPILER}" "${CMAKE_LINKER}" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
+            "${H3_UAM_SOURCE_DIR}" "${H3_UAM_BUILD_DIR}" "${H3_UAM_OBJECT}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/uam/uam_compile.cpp" "${H3_ROOT}/tools/h3-uam-object" "${H3_UAM_BUILD_DIR}/libuam.a"
+    COMMENT "UAM shader compiler object")
+add_custom_target(h3_uam_object DEPENDS "${H3_UAM_OBJECT}")
+add_dependencies(halo3-nx h3_uam_object)
+target_link_libraries(halo3-nx PRIVATE "${H3_UAM_OBJECT}")
+
 find_package(SDL3 REQUIRED CONFIG)
 target_link_libraries(halo3-nx PRIVATE H3RecompLib H3Config H3NativeCache H3NativeTags
     ${H3_MODULES} ${H3_MODULE_STUBS} SDL3::SDL3-static)

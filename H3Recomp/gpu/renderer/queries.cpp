@@ -169,7 +169,7 @@ void main()
                 info.num_readwrite_storage_buffers = 1;
                 info.threadcount_x = info.threadcount_y = kCountGroupSize;
                 info.threadcount_z = 1;
-                g_countPipeline = SDL_CreateGPUComputePipeline(g_device, &info);
+                g_countPipeline = CreateGpuComputePipeline(info);
             }
             return g_ids && g_counts && g_zeros && g_countPipeline;
         }

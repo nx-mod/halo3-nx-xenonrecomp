@@ -34,6 +34,7 @@ namespace h3::gpu::renderer::internal
         // guest microcode hash -> shader
         std::unordered_map<uint64_t, std::unique_ptr<Shader>> g_shaders;
 
+#ifndef __SWITCH__
         // shaderc options for SPIR-V that SDL_GPU's Vulkan backend accepts.
         shaderc_compile_options_t CompileOptions(bool optimize)
         {
@@ -43,6 +44,7 @@ namespace h3::gpu::renderer::internal
                 shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
             return options;
         }
+#endif
 
     }
 
@@ -83,6 +85,13 @@ namespace h3::gpu::renderer::internal
         if (dumpGlsl)
             std::ofstream(cacheName + ".glsl") << glsl;
 
+#ifdef __SWITCH__
+        // Compiled when the shader is created (CreateGpuShader), which
+        // caches the result.
+        (void)cacheName;
+        (void)stage;
+        return std::vector<uint8_t>(glsl.begin(), glsl.end());
+#else
         std::filesystem::path path;
         if (!g_shaderCacheDirectory.empty())
         {
@@ -124,17 +133,36 @@ namespace h3::gpu::renderer::internal
         }
         shaderc_result_release(result);
         return spirv;
+#endif
     }
 
+#ifndef __SWITCH__
+    SDL_GPUShader* CreateGpuShader(const SDL_GPUShaderCreateInfo& info)
+    {
+        return SDL_CreateGPUShader(g_device, &info);
+    }
+
+    SDL_GPUComputePipeline* CreateGpuComputePipeline(const SDL_GPUComputePipelineCreateInfo& info)
+    {
+        return SDL_CreateGPUComputePipeline(g_device, &info);
+    }
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
     // content_hash_avx2.cpp (compiled for AVX2).
     uint64_t ContentHashAvx2(const void* data, size_t size);
+#endif
 
     uint64_t ContentHash(const void* data, size_t size)
     {
         // Both variants compute the same XXH3 value; the AVX2 one is
         // roughly twice as fast on large data.
+#if defined(__x86_64__) || defined(_M_X64)
         static const bool avx2 = __builtin_cpu_supports("avx2");
         return avx2 ? ContentHashAvx2(data, size) : XXH3_64bits(data, size);
+#else
+        return XXH3_64bits(data, size);
+#endif
     }
 
     void LogOnce(const std::string& message)
@@ -239,6 +267,17 @@ namespace h3::gpu::renderer::internal
 
     SDL_GPUShader* CompileInternal(const char* glsl, bool vertex, uint32_t samplers, uint32_t uniformBuffers)
     {
+#ifdef __SWITCH__
+        SDL_GPUShaderCreateInfo info{};
+        info.code_size = strlen(glsl);
+        info.code = reinterpret_cast<const Uint8*>(glsl);
+        info.entrypoint = "main";
+        info.format = SDL_GPU_SHADERFORMAT_SPIRV;
+        info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
+        info.num_samplers = samplers;
+        info.num_uniform_buffers = uniformBuffers;
+        return CreateGpuShader(info);
+#else
         shaderc_compile_options_t options = CompileOptions(false);
         shaderc_compilation_result_t result = shaderc_compile_into_spv(g_compiler, glsl, strlen(glsl),
             vertex ? shaderc_vertex_shader : shaderc_fragment_shader, "internal", "main", options);
@@ -256,9 +295,10 @@ namespace h3::gpu::renderer::internal
             info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
             info.num_samplers = samplers;
             info.num_uniform_buffers = uniformBuffers;
-            shader = SDL_CreateGPUShader(g_device, &info);
+            shader = CreateGpuShader(info);
         }
         shaderc_result_release(result);
         return shader;
+#endif
     }
 }

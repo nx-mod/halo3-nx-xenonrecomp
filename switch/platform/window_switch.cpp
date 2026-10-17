@@ -1,6 +1,10 @@
-// The window on the Switch (video/window.h), before there is host rendering:
-// libnx's text console shows how far the game has got (frames the command
-// processor presented, and their rate), SDL handles events and gamepads.
+// The window on the Switch (video/window.h): an SDL window with an SDL_GPU
+// device on sdl3-nx's deko3d backend, which the renderer draws the command
+// stream with (as on the PC); each frame it finishes is scaled onto the
+// swapchain here. The PC shows frames through SDL's GPU renderer, whose
+// built-in shaders have no DKSH, so this blits instead. Without a device
+// (H3_RENDER=0, or deko3d failing) libnx's text console shows how far the
+// game has got. SDL handles events and gamepads.
 //
 // Leaving ends the process (main.cpp) instead of returning to the homebrew
 // loader: the guest's threads cannot be stopped, and the loader cannot take
@@ -8,6 +12,7 @@
 
 #include "video/window.h"
 #include "config/env.h"
+#include "gpu/renderer.h"
 #include "input/input.h"
 #include "memory.h"
 
@@ -18,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 namespace h3::debug
 {
@@ -55,6 +61,12 @@ namespace h3::video
         std::atomic<uint32_t> g_framesPresented{ 0 };
         std::atomic<int> g_quitCode{ -1 };
         std::atomic<const char*> g_fatal{ nullptr };
+
+        // The screen the swapchain is made for.
+        constexpr int kScreenWidth = 1280, kScreenHeight = 720;
+
+        SDL_Window* g_window = nullptr;
+        SDL_GPUDevice* g_device = nullptr;  // null: the text console instead
     }
 
     // A guest thread that hits a fatal error stops here instead of exiting:
@@ -118,17 +130,97 @@ namespace h3::video
         }
     }
 
+    namespace
+    {
+        // The deko3d device, claiming the window, with the renderer on it.
+        // False leaves neither behind: the console needs the screen.
+        bool CreateGpu()
+        {
+            const char* setting = EnvString("H3_RENDER");
+            if (setting && strcmp(setting, "0") == 0)
+                return false;
+            g_window = SDL_CreateWindow("Halo 3", kScreenWidth, kScreenHeight, 0);
+            if (!g_window)
+            {
+                fprintf(stderr, "[video] SDL_CreateWindow failed: %s\n", SDL_GetError());
+                return false;
+            }
+            g_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_PRIVATE, false, "deko3d");
+            if (!g_device || !SDL_ClaimWindowForGPUDevice(g_device, g_window))
+                fprintf(stderr, "[video] no deko3d device: %s\n", SDL_GetError());
+            else if (!gpu::renderer::Initialize(g_device))
+                fprintf(stderr, "[video] the renderer didn't start\n");
+            else
+                return true;
+            if (g_device)
+                SDL_DestroyGPUDevice(g_device);
+            SDL_DestroyWindow(g_window);
+            g_device = nullptr;
+            g_window = nullptr;
+            return false;
+        }
+
+        // The renderer's latest frame, scaled to fit the screen with its
+        // aspect ratio kept (black bars), then presented. Main thread.
+        void Present()
+        {
+            SDL_GPUCommandBuffer* commands = SDL_AcquireGPUCommandBuffer(g_device);
+            if (!commands)
+                return;
+            SDL_GPUTexture* screen = nullptr;
+            Uint32 width = 0, height = 0;
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(commands, g_window, &screen, &width, &height) || !screen)
+            {
+                SDL_CancelGPUCommandBuffer(commands);
+                return;
+            }
+            gpu::renderer::Frame frame;
+            SDL_GPUBlitInfo blit{};
+            blit.destination.texture = screen;
+            blit.load_op = SDL_GPU_LOADOP_CLEAR;
+            blit.clear_color = { 0.0f, 0.0f, 0.0f, 1.0f };
+            blit.filter = SDL_GPU_FILTER_LINEAR;
+            if (gpu::renderer::AcquireFrame(frame) && frame.width && frame.height)
+            {
+                float scale = std::min(float(width) / frame.width, float(height) / frame.height);
+                blit.source.texture = frame.texture;
+                blit.source.x = frame.x;
+                blit.source.y = frame.y;
+                blit.source.w = frame.width;
+                blit.source.h = frame.height;
+                blit.destination.w = Uint32(frame.width * scale);
+                blit.destination.h = Uint32(frame.height * scale);
+                blit.destination.x = (width - blit.destination.w) / 2;
+                blit.destination.y = (height - blit.destination.h) / 2;
+                SDL_BlitGPUTexture(commands, &blit);
+            }
+            else
+            {
+                // Nothing drawn yet: black.
+                SDL_GPUColorTargetInfo target{};
+                target.texture = screen;
+                target.load_op = SDL_GPU_LOADOP_CLEAR;
+                target.store_op = SDL_GPU_STOREOP_STORE;
+                target.clear_color = blit.clear_color;
+                SDL_EndGPURenderPass(SDL_BeginGPURenderPass(commands, &target, 1, nullptr));
+            }
+            SDL_SubmitGPUCommandBuffer(commands);
+        }
+    }
+
     bool CreateMainWindow()
     {
-        consoleInit(nullptr);
-        printf("halo3-nx: no host rendering yet; this shows how far the game gets.\n");
-        printf("Hold + and - to quit.\n\n");
-        consoleUpdate(nullptr);
-
-        if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD))
         {
             fprintf(stderr, "[video] SDL_Init failed: %s\n", SDL_GetError());
             return false;
+        }
+        if (!CreateGpu())
+        {
+            consoleInit(nullptr);
+            printf("halo3-nx: no host rendering; this shows how far the game gets.\n");
+            printf("Hold + and - to quit.\n\n");
+            consoleUpdate(nullptr);
         }
         input::Initialize();
         return true;
@@ -178,7 +270,8 @@ namespace h3::video
             {
                 printf("\n\nStopped: %s\nsdmc:/halo3-nx/halo3-err.log has the details.\n"
                     "Hold + and - to quit.\n", fatal);
-                consoleUpdate(nullptr);
+                if (!g_device)
+                    consoleUpdate(nullptr);
             }
 
             auto now = Clock::now();
@@ -201,11 +294,15 @@ namespace h3::video
                 printf("\rframe %u (%.0f fps)  read %llu MB  wrote %llu MB      ", frame, (frame - lastFrame) / elapsed,
                     (unsigned long long)(kernel::FileBytesRead() >> 20),
                     (unsigned long long)(kernel::FileBytesWritten() >> 20));
-                consoleUpdate(nullptr);
+                if (!g_device)
+                    consoleUpdate(nullptr);
                 lastFrame = frame;
                 lastStatus = now;
             }
-            svcSleepThread(16'000'000);
+            if (g_device)
+                Present();  // waits for the swapchain: paces the loop
+            else
+                svcSleepThread(16'000'000);
         }
         return 0;
     }
